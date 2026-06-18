@@ -1,0 +1,554 @@
+# ══════════════════════════════════════════════════════════════════════
+#  radex_gateway.yaml — Radex MR107ion BLE → Web UI + Народмон
+#  v0.3.0 — ПЕРЕСБОРКА С НУЛЯ от официального bt-proxy baseline.
+#
+#  Решение оператора (2026-06-14): «зайти заново — установить стандартную
+#  прошивку БТ-прокси с гита ESPHome и пошагово вписывать датчики».
+#  Вместо борьбы с тесным heap v0.2.x — собираем с известно-стабильной
+#  официальной базы (esphome/bluetooth-proxies/esp32-generic.yaml) и находим
+#  бисекцией, какой именно блок датчиков вызывает json:111 (если вызывает).
+#
+#  БАЗА (дословно upstream esp32-generic.yaml, non-factory):
+#    framework esp-idf, esp32_ble_tracker scan active:true (defaults),
+#    bluetooth_proxy active:true, safe_mode + factory_reset кнопки.
+#  ДОБАВЛЕНО поверх (наш scaffold): фикс. имя radex-gw, secrets-WiFi + AP,
+#    OTA-пароль, api.encryption, web_server v3, mdns, WiFi-watchdog,
+#    UART heap-log (диагностика, удаляется в релизе).
+#
+#  ШАГ 0 (этот файл): scaffold + web-стек, БЕЗ product-сенсоров. Пол отсчёта
+#    для вопроса json:111 — мало сущностей, браузер + F5 должны быть чисты.
+#  Дальше пошагово: радон last → климат → диагностика → Народмон →
+#    радон avg(device) ПОСЛЕДНИМ. Radon min/max — ВЫКИНУТЫ (оператор 2026-06-14).
+# ══════════════════════════════════════════════════════════════════════
+
+substitutions:
+  device_name: radex-gw
+  device_friendly: "Radex MR107ion BLE Gateway"
+  build_path: D:/esp32_radex_build/radex-gw
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${device_friendly}
+  comment: "Radex MR107ion -> Web UI + Narodmon (rebuild from bt-proxy base)"
+  min_version: 2025.8.0
+  build_path: ${build_path}
+  includes:
+    - include/esp_diag.h
+    - include/radex_read_hook.h
+  on_boot:
+    priority: -300
+    then:
+      - lambda: 'ESP_LOGI("boot", "Radex Gateway v0.3.0-step6b (Web UI redesign: sorting_groups + RU names, sg_re dropped — empty-group lit fix) booted, web UI: http://%s.local/", "${device_name}");'
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    # STEP 4b (2026-06-14): на step4 (LWIP_MAX_SOCKETS=10 дефолт) исходящий
+    # http_request.get() к narodmon.ru падал на socket() syscall:
+    #   esp-tls: Failed to create socket (family 2 socktype 1 protocol 0)
+    #   HTTP_CLIENT: Connection failed, sock < 0
+    #   ESP_ERR_HTTP_CONNECT (= ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET 0x8002)
+    # Корень — LWIP socket pool исчерпан: web_server httpd (max_open_sockets≈7)
+    # + api (1-2) + mdns/sntp/wifi (~2) + 1 outbound HTTP уже выходило за 10.
+    # Бамп до 16 — даёт запас headroom под исходящий HTTP при активном Web UI.
+    #
+    # STEP 4c (2026-06-14): на step4b — task_wdt timeout 5с (дефолт) убивал
+    # loop task через ~4.5с после нажатия кнопки, потому что http_request.get
+    # к глухому narodmon (PC тоже не достучался за 25с) — sync-блокирующий
+    # вызов внутри script.execute; пока он ждёт connect/response, loop не
+    # тикает → task_wdt: Print CPU 1 backtrace → SW_CPU_RESET (0xc).
+    # Бамп до 60с — даёт http_request полные 30с-timeout не падая в reboot.
+    # WiFi-watchdog (180с) ниже всё равно поймает реальный WiFi-hang.
+    sdkconfig_options:
+      CONFIG_LWIP_MAX_SOCKETS: "16"
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "60"
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+wifi:
+  # Без BSSID-пина (оператор 2026-06-14): ESP сам выберет точку оператор-SSID
+  # с лучшим RSSI. fast_connect снят — он полезен ТОЛЬКО при bssid pin.
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  ap:
+    ssid: "radex-gw Fallback"
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  # gateway автономен без HA -> не ребутиться при отсутствии клиента.
+  # Авто-recovery от зависшего WiFi даёт собственный watchdog (interval ниже).
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+    password: !secret ota_password
+  - platform: web_server
+
+web_server:
+  version: 3
+  port: 80
+  include_internal: false
+  local: true
+  # 2026-06-14 (гипотеза оператора, подтверждённая логом v030_step1coex_validation.log):
+  # Debug Log panel в Web UI v3 подписана на /events SSE и сериализует КАЖДУЮ
+  # лог-запись отдельным JSON-event'ом. heap-лог 5с + radon-poll 4.3с + WiFi-флап
+  # → поток в десятки event/с → web_server buffer не успевает дренироваться →
+  # JsonDocument overflow (json:111) → near-OOM. log:false убирает Debug Log
+  # panel и live-log SSE; state-events продолжают идти штатно.
+  # 2026-06-14 (v0.3.0-step5b): фикс v0.3.0 заявлял log:false, но строка
+  # физически отсутствовала — комментарий был, опции не было. Восстановлено.
+  # Скрин оператора показывал json:111 синхронно с http_request (Народмон-аплоад
+  # сжимает heap до free=13 КБ) — SSE-флуд Debug Log'а ловил это окно.
+  log: false
+  # v0.3.0-step6: AtomFast-style sorting_groups (5 секций как на скрине AtomFast).
+  sorting_groups:
+    - id: sg_main
+      name: "Radex — показания"
+      sorting_weight: 10
+    - id: sg_settings
+      name: "Настройки"
+      sorting_weight: 20
+    - id: sg_narodmon
+      name: "Народмон"
+      sorting_weight: 30
+    # sg_re — отключена в step6: пустая группа (нет ни одной сущности с этим
+    # sorting_group_id) ломала рендер esp-entity-table в Web UI v3
+    # ("Error: invalid template strings array" в lit-html). Группа вернётся
+    # после добавления первой RE-сущности (raw notify hex / GATT-таблица).
+    - id: sg_diag
+      name: "Диагностика"
+      sorting_weight: 80
+
+mdns:
+  disabled: false
+
+# ── STEP 4: HTTP-клиент для Народмона + SNTP-время ──
+http_request:
+  id: http_client
+  # narodmon.ru может отвечать медленно (на тестах с PC до 81 с до 503 на пике
+  # нагрузки). Поднял 10s → 30s, чтобы прошивка не отбрасывала запрос как
+  # timeout если сервер просто медленный.
+  timeout: 30s
+  useragent: "esphome-radex-gw/0.3"
+  verify_ssl: false
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Moscow
+
+# ── БАЗА bt-proxy (upstream esp32-generic.yaml) ──
+esp32_ble_tracker:
+  scan_parameters:
+    # coex-fix (2026-06-14): duty ~5% (interval 640 / window 32), было ~9.4%
+    # дефолт (320/30) — отдать радио WiFi на фоне mid-session deauth.
+    # interval 640ms НЕ кратен adv Radex (~1000ms) → без фазового резонанса.
+    interval: 640ms
+    window: 32ms
+    active: true
+
+bluetooth_proxy:
+  active: true
+
+# ── STEP 3: globals для счётчиков BLE connect/disconnect ──
+globals:
+  - id: ble_connect_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: ble_disconnect_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+# ── STEP 1: ble_client к Radex MR107ion + READ-poll одного хэндла radon_last ──
+ble_client:
+  - mac_address: !secret radex_mac
+    id: ble_radex
+    auto_connect: true
+    on_connect:
+      - lambda: |-
+          id(ble_connect_count) += 1;
+          ESP_LOGI("radex", "===== Radex CONNECTED (#%u) =====", (unsigned) id(ble_connect_count));
+          id(ble_connects).publish_state((float) id(ble_connect_count));
+          id(ble_connected).publish_state(true);
+    on_disconnect:
+      - lambda: |-
+          id(ble_disconnect_count) += 1;
+          ESP_LOGW("radex", "Radex DISCONNECT (#%u)", (unsigned) id(ble_disconnect_count));
+          id(ble_disconnects).publish_state((float) id(ble_disconnect_count));
+          id(ble_connected).publish_state(false);
+
+sensor:
+  # ─── ПОКАЗАНИЯ (sg_main) ───
+  - platform: template
+    name: "ОА радона (последняя)"
+    id: radon_last
+    unit_of_measurement: "Bq/m³"
+    accuracy_decimals: 1
+    icon: "mdi:radioactive"
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_main
+      sorting_weight: 1
+
+  - platform: template
+    name: "ОА радона (среднее, прибор)"
+    id: radon_avg_device
+    unit_of_measurement: "Bq/m³"
+    accuracy_decimals: 1
+    icon: "mdi:radioactive-circle"
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_main
+      sorting_weight: 2
+
+  - platform: template
+    name: "Температура"
+    id: temp_radex
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    icon: "mdi:thermometer"
+    device_class: temperature
+    state_class: measurement
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_main
+      sorting_weight: 3
+
+  - platform: template
+    name: "Влажность"
+    id: humidity_radex
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    icon: "mdi:water-percent"
+    device_class: humidity
+    state_class: measurement
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_main
+      sorting_weight: 4
+
+  # ─── ДИАГНОСТИКА (sg_diag) ───
+  - platform: wifi_signal
+    name: "WiFi сигнал"
+    id: wifi_rssi
+    update_interval: 30s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_diag
+      sorting_weight: 1
+
+  - platform: uptime
+    name: "Uptime"
+    id: esp_uptime
+    update_interval: 30s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_diag
+      sorting_weight: 2
+
+  - platform: template
+    name: "BLE: успешных коннектов"
+    id: ble_connects
+    accuracy_decimals: 0
+    icon: "mdi:bluetooth-connect"
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_diag
+      sorting_weight: 10
+
+  - platform: template
+    name: "BLE: реконнектов всего"
+    id: ble_disconnects
+    accuracy_decimals: 0
+    icon: "mdi:bluetooth-off"
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_diag
+      sorting_weight: 11
+
+binary_sensor:
+  - platform: template
+    name: "BLE: Radex подключён"
+    id: ble_connected
+    device_class: connectivity
+    icon: "mdi:bluetooth"
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_diag
+      sorting_weight: 12
+
+  - platform: status
+    name: "API подключён"
+    id: api_connected
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_diag
+      sorting_weight: 30
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP адрес"
+      id: wifi_ip
+      icon: "mdi:ip-network"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_diag
+        sorting_weight: 21
+    ssid:
+      name: "Подключено к WiFi"
+      id: wifi_ssid_t
+      icon: "mdi:wifi"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_diag
+        sorting_weight: 22
+    bssid:
+      name: "WiFi BSSID"
+      id: wifi_bssid_t
+      icon: "mdi:access-point"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_diag
+        sorting_weight: 23
+    mac_address:
+      name: "ESP32 MAC"
+      id: esp_mac
+      icon: "mdi:network"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_diag
+        sorting_weight: 20
+
+button:
+  - platform: safe_mode
+    id: button_safe_mode
+    name: "Перезагрузить (Safe Mode)"
+    icon: "mdi:restart"
+    web_server:
+      sorting_group_id: sg_settings
+      sorting_weight: 1
+
+  - platform: factory_reset
+    id: factory_reset_btn
+    name: "Сброс к заводским"
+    icon: "mdi:factory"
+    web_server:
+      sorting_group_id: sg_settings
+      sorting_weight: 2
+
+  # v0.3.0-step6: ручной BLE-реконнект (аналог AtomFast «Переподключиться»).
+  # ble_client.disconnect → auto_connect:true сам поднимет связь обратно.
+  - platform: template
+    name: "Переподключиться к Radex"
+    id: ble_reconnect_btn
+    icon: "mdi:bluetooth-transfer"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("radex", "Manual BLE reconnect requested");
+          id(ble_radex).disconnect();
+    web_server:
+      sorting_group_id: sg_settings
+      sorting_weight: 3
+
+  # STEP 4: ручной триггер выгрузки на Народмон (для отладки и теста)
+  - platform: template
+    name: "Отправить на Народмон сейчас"
+    id: narodmon_send_now
+    icon: "mdi:cloud-upload"
+    on_press:
+      - script.execute: send_narodmon
+    web_server:
+      sorting_group_id: sg_narodmon
+      sorting_weight: 10
+
+# ── STEP 4: Народмон switch + editable metric names ──
+switch:
+  - platform: template
+    name: "Выгружать на Народмон"
+    id: narodmon_enabled
+    icon: "mdi:cloud-upload"
+    restore_mode: RESTORE_DEFAULT_ON
+    optimistic: true
+    web_server:
+      sorting_group_id: sg_narodmon
+      sorting_weight: 1
+
+text:
+  - platform: template
+    name: "Имя метрики: радон"
+    id: nm_radon
+    optimistic: true
+    restore_value: true
+    mode: text
+    initial_value: "RR1"
+    icon: "mdi:tag-text"
+    web_server:
+      sorting_group_id: sg_narodmon
+      sorting_weight: 2
+
+  - platform: template
+    name: "Имя метрики: температура"
+    id: nm_temp
+    optimistic: true
+    restore_value: true
+    mode: text
+    initial_value: "T1"
+    icon: "mdi:tag-text"
+    web_server:
+      sorting_group_id: sg_narodmon
+      sorting_weight: 3
+
+  - platform: template
+    name: "Имя метрики: влажность"
+    id: nm_hum
+    optimistic: true
+    restore_value: true
+    mode: text
+    initial_value: "H1"
+    icon: "mdi:tag-text"
+    web_server:
+      sorting_group_id: sg_narodmon
+      sorting_weight: 4
+
+# ── STEP 4: send_narodmon script (manual + auto) ──
+script:
+  - id: send_narodmon
+    then:
+      - if:
+          condition:
+            and:
+              - wifi.connected:
+              - lambda: "return !std::isnan(id(radon_last).state);"
+          then:
+            - http_request.get:
+                url: !lambda |-
+                  char url[320];
+                  // Народмон: http://narodmon.ru/get?ID=<MAC>&<metric>=<val>...
+                  // RR* = радон Bq/m³, T* = температура °C, H* = влажность %.
+                  float temp = std::isnan(id(temp_radex).state) ? 0.0f : id(temp_radex).state;
+                  float hum  = std::isnan(id(humidity_radex).state) ? 0.0f : id(humidity_radex).state;
+                  snprintf(url, sizeof(url),
+                    "http://narodmon.ru/get?ID=%s&%s=%.1f&%s=%.1f&%s=%.0f",
+                    id(esp_mac).state.c_str(),
+                    id(nm_radon).state.c_str(), id(radon_last).state,
+                    id(nm_temp).state.c_str(),  temp,
+                    id(nm_hum).state.c_str(),   hum);
+                  ESP_LOGI("narodmon", "GET %s", url);
+                  return std::string(url);
+                capture_response: true
+                on_response:
+                  then:
+                    - lambda: |-
+                        ESP_LOGI("narodmon", "HTTP %d, body: %s",
+                                 response->status_code, body.c_str());
+          else:
+            - lambda: 'ESP_LOGW("narodmon", "skip: wifi=%d radon_nan=%d", wifi::global_wifi_component->is_connected(), std::isnan(id(radon_last).state));'
+
+# ── Диагностика (UART-only, удаляется в релизе) ──
+interval:
+  # ── STEP 2: READ-poll round-robin по 3 хэндлам каждые 4.3с ──
+  # 0x0049 radon_last, 0x0058 temperature, 0x005E humidity.
+  # Период обновления каждого = 3 * 4.3 = 12.9с. Round-robin вместо batch'а —
+  # меньше per-tick Bluedroid-аллокаций, бережёт heap headroom (урок INC-07).
+  - interval: 4300ms
+    then:
+      - lambda: |-
+          using namespace esphome::radex_hook;
+          static RadexReadHook hook;
+          static bool hook_registered = false;
+          if (!hook_registered) {
+            hook.set_callback([](uint16_t handle, const uint8_t* data, uint16_t len) {
+              // Формат payload зависит от handle (см. radex_read_hook.h GATT-карта):
+              //   0x0040 float32 LE — radon avg (device), Bq/m³  (STEP 5)
+              //   0x0049 float32 LE — radon last, Bq/m³
+              //   0x0058 uint16  LE — temperature × 10 → °C
+              //   0x005E uint8       — humidity, %
+              if (handle == 0x0040) {
+                float v = decode_float_le(data, len);
+                if (std::isfinite(v) && v >= 0 && v < 10000) {
+                  id(radon_avg_device).publish_state(v);
+                  ESP_LOGI("radex", "radon_avg_device=%.2f Bq/m3", v);
+                }
+              } else if (handle == 0x0049) {
+                float v = decode_float_le(data, len);
+                if (std::isfinite(v) && v >= 0 && v < 10000) {
+                  id(radon_last).publish_state(v);
+                  ESP_LOGI("radex", "radon=%.2f Bq/m3", v);
+                }
+              } else if (handle == 0x0058) {
+                uint16_t raw = decode_u16_le(data, len);
+                float t = raw / 10.0f;
+                if (t >= -40 && t <= 85) {
+                  id(temp_radex).publish_state(t);
+                  ESP_LOGI("radex", "temp=%.1f C", t);
+                }
+              } else if (handle == 0x005E) {
+                if (len >= 1) {
+                  float h = (float) data[0];
+                  if (h >= 0 && h <= 100) {
+                    id(humidity_radex).publish_state(h);
+                    ESP_LOGI("radex", "hum=%.0f %%", h);
+                  }
+                }
+              }
+            });
+            id(ble_radex).register_ble_node(&hook);
+            hook_registered = true;
+            ESP_LOGI("radex", "BLEClientNode hook registered (step5, 4 handles)");
+          }
+          if (!id(ble_radex).connected()) return;
+          esp_gatt_if_t if_g = (esp_gatt_if_t) id(ble_radex).get_gattc_if();
+          uint16_t conn = id(ble_radex).get_conn_id();
+          // STEP 5: 4 хэндла round-robin, период каждого = 4 * 4.3 = 17.2с.
+          static const uint16_t handles[] = {0x0049, 0x0058, 0x005E, 0x0040};
+          static uint8_t cursor = 0;
+          uint16_t h = handles[cursor];
+          cursor = (cursor + 1) % 4;
+          esp_err_t e = esp_ble_gattc_read_char(if_g, conn, h, ESP_GATT_AUTH_REQ_NONE);
+          if (e != ESP_OK) ESP_LOGW("radex_poll", "READ h=0x%04X ret=%d", h, e);
+
+  # heap-лог: ловим free/largest/min_ever в момент залпа json:111 (browser F5).
+  - interval: 5s
+    then:
+      - lambda: |-
+          ESP_LOGI("heap", "free=%u largest=%u min_ever=%u",
+                   (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                   (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+                   (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+
+  # STEP 4: Народмон auto-upload каждые 300с (спецификация narodmon.ru — ≥5 мин)
+  - interval: 300s
+    then:
+      - if:
+          condition:
+            switch.is_on: narodmon_enabled
+          then:
+            - script.execute: send_narodmon
+
+  # WiFi-watchdog: reboot_timeout:0s убрал авто-recovery, свой watchdog
+  # рестартит при зависании WiFi-стека >180с (arch_restart, кросс-фреймворк).
+  - interval: 10s
+    then:
+      - lambda: |-
+          static uint32_t wifi_down_s = 0;
+          if (wifi::global_wifi_component->is_connected()) {
+            wifi_down_s = 0;
+          } else {
+            wifi_down_s += 10;
+            ESP_LOGW("wifi_wd", "WiFi down %us (restart at 180s)", wifi_down_s);
+            if (wifi_down_s >= 180) {
+              ESP_LOGE("wifi_wd", "WiFi hung >180s -> arch_restart()");
+              arch_restart();
+            }
+          }

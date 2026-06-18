@@ -1,0 +1,12 @@
+/* Ограничение высоты Debug Log в web_server v2.
+ * textarea#log — стандартный id лог-поля v2.
+ * 240px ≈ 12 строк, scroll по Y.
+ */
+textarea#log {
+  max-height: 240px !important;
+  height: 240px !important;
+  overflow-y: auto !important;
+  resize: vertical !important;
+  font-family: monospace;
+  font-size: 12px;
+}

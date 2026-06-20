@@ -87,6 +87,7 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   power_save_mode: none
+  output_power: 8.5dB
   ap:
     ssid: "radex-gw Fallback"
 
@@ -159,18 +160,10 @@ esp32_ble_tracker:
     window: 32ms
     active: true
 
-# 2026-06-15: фикс «BLE require 4 slots but only 3 configured». bluetooth_proxy
-# занимает 3 слота, ble_client (Radex) — 4-й. Без этого ble_client НЕ получал
-# слот → BLE: подключён=false, 0 коннектов за всю сессию (диагностика 11:21).
 esp32_ble:
   max_connections: 4
 
-# 2026-06-15: bluetooth_proxy ВРЕМЕННО отключён по запросу оператора —
-# изолируем стабильность Radex (наш ble_client) от конкуренции btproxy
-# за air time + Bluedroid task. Раскомментировать обратно при возврате
-# к unified-gateway сценарию (вариант C, см. CLAUDE.md «Дорожная карта»).
-# bluetooth_proxy:
-#   active: true
+# bluetooth_proxy УБРАН (2026-06-21): WiFi-интерференция 2.4 ГГц.
 
 # ── STEP 3: globals для счётчиков BLE connect/disconnect ──
 globals:
@@ -622,8 +615,19 @@ script:
           else:
             - lambda: 'ESP_LOGW("narodmon", "skip: wifi=%d radon_nan=%d", wifi::global_wifi_component->is_connected(), std::isnan(id(radon_last).state));'
 
+output:
+  - platform: gpio
+    pin: GPIO2
+    id: heartbeat_led
+
 # ── Диагностика (UART-only, удаляется в релизе) ──
 interval:
+  - interval: 2s
+    then:
+      - output.turn_on: heartbeat_led
+      - delay: 100ms
+      - output.turn_off: heartbeat_led
+
   # ── READ-poll round-robin по 4 хэндлам каждые 4.3с ──
   # 0x0040 radon_avg_device, 0x0049 radon_last, 0x0058 temperature, 0x005E humidity.
   # Период обновления каждого = 4 * 4.3 = 17.2с. Round-robin вместо batch'а —

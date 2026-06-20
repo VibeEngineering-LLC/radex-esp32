@@ -9,7 +9,7 @@
 #      sdkconfig_options УДАЛЕНЫ — esp-idf-only, на arduino не применимы.
 #    - device_name=radex-gw-s3 (тот же, что и baseline → OTA-обновление).
 #    - AP fallback закрытый (pass = !secret ap_password).
-#    - bluetooth_proxy закомментирован (как в исходнике radex_gateway.yaml).
+#    - bluetooth_proxy УБРАН (2026-06-21): WiFi-интерференция 2.4 ГГц.
 #
 #  step2 (средние ОА):
 #    - sliding_window_moving_average для radon_last → sensors `radon_avg_hour`
@@ -72,6 +72,7 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   power_save_mode: none
+  output_power: 8.5dB
   ap:
     ssid: "radex-gw-s3 Fallback"
     password: !secret ap_password
@@ -131,16 +132,10 @@ esp32_ble_tracker:
     window: 32ms
     active: true
 
-# 4 BLE-слота: 3 для bluetooth_proxy (если включат) + 1 для ble_client (Radex).
-# Сейчас bluetooth_proxy выключен — но max_connections=4 ставим заранее, чтобы
-# при включении proxy не было «BLE require 4 slots but only 3 configured».
 esp32_ble:
-  max_connections: 4
+  max_connections: 1
 
-# bluetooth_proxy ВЫКЛЮЧЕН (как в исходнике radex_gateway.yaml). Раскомментировать
-# только при возврате к unified-gateway сценарию (после стабилизации Radex BLE).
-# bluetooth_proxy:
-#   active: true
+# bluetooth_proxy УБРАН (2026-06-21): WiFi-интерференция 2.4 ГГц.
 
 globals:
   - id: ble_connect_count
@@ -632,7 +627,28 @@ script:
                               ESP_LOGI("narodmon", "JSON POST HTTP %d, body: %s",
                                        response->status_code, body.c_str());
 
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: GPIO48
+    num_leds: 1
+    chipset: WS2812
+    id: heartbeat_led
+    name: "Heartbeat LED"
+    internal: true
+
 interval:
+  - interval: 2s
+    then:
+      - light.turn_on:
+          id: heartbeat_led
+          brightness: 15%
+          red: 0
+          green: 1
+          blue: 0
+      - delay: 100ms
+      - light.turn_off: heartbeat_led
+
   # READ-poll round-robin по 4 хэндлам, период каждого = 4 * 4.3 = 17.2 с.
   # 0x0040 radon_avg_device, 0x0049 radon_last, 0x0058 temperature, 0x005E humidity.
   # Радон: гард только NaN/отрицательные — верхний предел шкалы MR107ion

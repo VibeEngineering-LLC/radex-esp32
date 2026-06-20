@@ -8,6 +8,14 @@
 Дата — UTC+3 (Europe/Moscow).
 
 
+## [unreleased]
+### Changed
+- Removed `bluetooth_proxy` references from main YAMLs (WiFi 2.4 GHz interference).
+- Reduced WiFi TX power to 8.5 dBm across main YAMLs.
+- Added LED heartbeat (100ms flash every 2s) for visual board-alive indication.
+- Reduced `max_connections` from 4 to 1 on S3 YAML (only 1 ble_client needed).
+
+
 ## v0.3.0-step8 (2026-06-15) — изоляция стабильности Radex: `bluetooth_proxy` закомментирован
 
 **Что:** в основной `firmware/radex_gateway.yaml` блок `bluetooth_proxy: active: true`

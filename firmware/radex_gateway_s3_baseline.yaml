@@ -60,7 +60,11 @@ web_server:
   port: 80
   auth:
     username: radex
-    password: !secret ota_password
+    # Отдельный ключ от ota_password: HTTP Basic Auth летит в локальной сети
+    # plaintext (web_server без TLS), переиспользование OTA-пароля для web-auth
+    # делает OTA-пароль наблюдаемым через сниф локального трафика. См. audit-fix
+    # 2026-06-25 F6.
+    password: !secret web_server_auth_pass
   log: false
 
 mdns:

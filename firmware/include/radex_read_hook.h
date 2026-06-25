@@ -86,19 +86,10 @@ inline float decode_float_le(const uint8_t* d, uint16_t len) {
   std::memcpy(&v, d, 4);
   return v;
 }
-inline uint32_t decode_u32_le(const uint8_t* d, uint16_t len) {
-  if (len < 4) return 0;
-  uint32_t v;
-  std::memcpy(&v, d, 4);
-  return v;
-}
-inline uint16_t decode_u16_le(const uint8_t* d, uint16_t len) {
-  if (len < 2) return 0;
-  uint16_t v;
-  std::memcpy(&v, d, 2);
-  return v;
-}
 // Signed 16-bit LE — super-set safe для temper_x10 (см. GATT-карту выше).
+// Возвращает true при успехе. Caller обязан проверять результат до
+// использования out (callsites в YAML делают `if (len >= 2)` отдельно для
+// раннего скипа без чтения).
 inline int16_t decode_i16_le(const uint8_t* d, uint16_t len) {
   if (len < 2) return 0;
   int16_t v;
@@ -106,19 +97,12 @@ inline int16_t decode_i16_le(const uint8_t* d, uint16_t len) {
   return v;
 }
 
-// Helper для interval-loop: цикл READ по списку handles
-inline esp_err_t read_next_handle(ble_client::BLEClient* client,
-                                  const uint16_t* handles,
-                                  size_t count,
-                                  size_t& cursor) {
-  if (!client->connected()) return ESP_FAIL;
-  if (count == 0) return ESP_FAIL;
-  uint16_t h = handles[cursor];
-  cursor = (cursor + 1) % count;
-  esp_gatt_if_t if_g = (esp_gatt_if_t) client->get_gattc_if();
-  uint16_t conn = client->get_conn_id();
-  return esp_ble_gattc_read_char(if_g, conn, h, ESP_GATT_AUTH_REQ_NONE);
-}
+// Раньше здесь были decode_u32_le / decode_u16_le / read_next_handle
+// (helper для interval-loop). Все три больше не используются в рабочих
+// YAML — round-robin READ инлайнится прямо в interval-лямбде через
+// esp_ble_gattc_read_char(), а u32/u16 декодеры не нужны (все handle
+// либо float32 / int16 / uint8). Удалены в audit-fix 2026-06-25 (F5a/b).
+// При необходимости — восстановить из git-истории.
 
 }  // namespace radex_hook
 }  // namespace esphome

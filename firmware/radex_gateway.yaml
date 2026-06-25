@@ -421,8 +421,11 @@ switch:
 #   HTTP POST  — те же поля в form-encoded body. Endpoint http://narodmon.ru/post.
 #                Проксе-дружелюбен (некоторые прокси режут длинные GET).
 #   HTTPS POST — то же тело, но через TLS на https://narodmon.ru/post.
-#                Тяжелее по heap/CPU (mbedTLS handshake), полезно если требуется
-#                шифровать поля или защита от MITM в недоверенной сети.
+#                Тяжелее по heap/CPU (mbedTLS handshake). Шифрует payload
+#                в кабеле, но НЕ защищает от MITM: verify_ssl: false (см. блок
+#                http_request) — клиент не проверяет цепочку сертификатов, и
+#                активный MITM с подменой серта остаётся возможен. Полезно
+#                только как защита от пассивного снифа в недоверенной сети.
 #   JSON POST  — тело JSON `{"devices":[{"mac":"…","sensors":[{"id":"…","value":…}]}]}`
 #                на http://narodmon.ru/json (Content-Type: application/json). По
 #                спецификации скилла (narodmon-iot SKILL.md, раздел «JSON POST»)
@@ -454,6 +457,7 @@ text:
     restore_value: true
     mode: text
     initial_value: "RR1"
+    max_length: 16
     icon: "mdi:tag-text"
     web_server:
       sorting_group_id: sg_service
@@ -466,6 +470,7 @@ text:
     restore_value: true
     mode: text
     initial_value: "T1"
+    max_length: 16
     icon: "mdi:tag-text"
     web_server:
       sorting_group_id: sg_service
@@ -478,6 +483,7 @@ text:
     restore_value: true
     mode: text
     initial_value: "H1"
+    max_length: 16
     icon: "mdi:tag-text"
     web_server:
       sorting_group_id: sg_service
@@ -504,14 +510,18 @@ script:
                   - http_request.get:
                       url: !lambda |-
                         char url[320];
-                        float temp = std::isnan(id(temp_radex).state) ? 0.0f : id(temp_radex).state;
-                        float hum  = std::isnan(id(humidity_radex).state) ? 0.0f : id(humidity_radex).state;
-                        snprintf(url, sizeof(url),
-                          "http://narodmon.ru/get?ID=%s&%s=%.1f&%s=%.1f&%s=%.0f",
+                        int n = snprintf(url, sizeof(url),
+                          "http://narodmon.ru/get?ID=%s&%s=%.1f",
                           id(esp_mac).state.c_str(),
-                          id(nm_radon).state.c_str(), id(radon_last).state,
-                          id(nm_temp).state.c_str(),  temp,
-                          id(nm_hum).state.c_str(),   hum);
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(url) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(url + n, sizeof(url) - n,
+                            "&%s=%.1f", id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(url) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(url + n, sizeof(url) - n,
+                            "&%s=%.0f", id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
                         ESP_LOGI("narodmon", "GET %s", url);
                         return std::string(url);
                       capture_response: true
@@ -531,14 +541,18 @@ script:
                         Content-Type: "application/x-www-form-urlencoded"
                       body: !lambda |-
                         char body[320];
-                        float temp = std::isnan(id(temp_radex).state) ? 0.0f : id(temp_radex).state;
-                        float hum  = std::isnan(id(humidity_radex).state) ? 0.0f : id(humidity_radex).state;
-                        snprintf(body, sizeof(body),
-                          "ID=%s&%s=%.1f&%s=%.1f&%s=%.0f",
+                        int n = snprintf(body, sizeof(body),
+                          "ID=%s&%s=%.1f",
                           id(esp_mac).state.c_str(),
-                          id(nm_radon).state.c_str(), id(radon_last).state,
-                          id(nm_temp).state.c_str(),  temp,
-                          id(nm_hum).state.c_str(),   hum);
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.1f", id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.0f", id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
                         ESP_LOGI("narodmon", "POST body: %s", body);
                         return std::string(body);
                       capture_response: true
@@ -558,14 +572,18 @@ script:
                         Content-Type: "application/x-www-form-urlencoded"
                       body: !lambda |-
                         char body[320];
-                        float temp = std::isnan(id(temp_radex).state) ? 0.0f : id(temp_radex).state;
-                        float hum  = std::isnan(id(humidity_radex).state) ? 0.0f : id(humidity_radex).state;
-                        snprintf(body, sizeof(body),
-                          "ID=%s&%s=%.1f&%s=%.1f&%s=%.0f",
+                        int n = snprintf(body, sizeof(body),
+                          "ID=%s&%s=%.1f",
                           id(esp_mac).state.c_str(),
-                          id(nm_radon).state.c_str(), id(radon_last).state,
-                          id(nm_temp).state.c_str(),  temp,
-                          id(nm_hum).state.c_str(),   hum);
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.1f", id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.0f", id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
                         ESP_LOGI("narodmon", "HTTPS POST body: %s", body);
                         return std::string(body);
                       capture_response: true
@@ -591,19 +609,25 @@ script:
                       request_headers:
                         Content-Type: "application/json"
                       body: !lambda |-
-                        char body[320];
-                        float temp = std::isnan(id(temp_radex).state) ? 0.0f : id(temp_radex).state;
-                        float hum  = std::isnan(id(humidity_radex).state) ? 0.0f : id(humidity_radex).state;
-                        snprintf(body, sizeof(body),
+                        char body[384];
+                        int n = snprintf(body, sizeof(body),
                           "{\"devices\":[{\"mac\":\"%s\",\"sensors\":["
-                            "{\"id\":\"%s\",\"value\":%.1f},"
-                            "{\"id\":\"%s\",\"value\":%.1f},"
-                            "{\"id\":\"%s\",\"value\":%.0f}"
-                          "]}]}",
+                            "{\"id\":\"%s\",\"value\":%.1f}",
                           id(esp_mac).state.c_str(),
-                          id(nm_radon).state.c_str(), id(radon_last).state,
-                          id(nm_temp).state.c_str(),  temp,
-                          id(nm_hum).state.c_str(),   hum);
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            ",{\"id\":\"%s\",\"value\":%.1f}",
+                            id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            ",{\"id\":\"%s\",\"value\":%.0f}",
+                            id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body)) {
+                          snprintf(body + n, sizeof(body) - n, "]}]}");
+                        }
                         ESP_LOGI("narodmon", "JSON POST body: %s", body);
                         return std::string(body);
                       capture_response: true
@@ -661,11 +685,13 @@ interval:
                   ESP_LOGD("radex", "radon=%.2f Bq/m3", v);
                 }
               } else if (handle == 0x0058) {
-                int16_t raw = decode_i16_le(data, len);
-                float t = raw / 10.0f;
-                if (t >= -40 && t <= 85) {
-                  id(temp_radex).publish_state(t);
-                  ESP_LOGD("radex", "temp=%.1f C", t);
+                if (len >= 2) {
+                  int16_t raw = decode_i16_le(data, len);
+                  float t = raw / 10.0f;
+                  if (t >= -40 && t <= 85) {
+                    id(temp_radex).publish_state(t);
+                    ESP_LOGD("radex", "temp=%.1f C", t);
+                  }
                 }
               } else if (handle == 0x005E) {
                 if (len >= 1) {

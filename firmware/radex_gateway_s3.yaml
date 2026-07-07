@@ -57,6 +57,26 @@ esphome:
           id(ble_connects).publish_state((float) id(ble_connect_count));
           id(ble_disconnects).publish_state((float) id(ble_disconnect_count));
           ESP_LOGI("boot", "Radex Gateway S3 step3 (arduino, Narodmon infra OFF by default) booted, web UI: http://%s.local/", "${device_name}");
+          // Runtime MAC override from NVS text entity
+          auto parse_mac = [](const std::string &s) -> uint64_t {
+            if (s.length() != 17) return 0;
+            uint64_t m = 0;
+            for (int i = 0; i < 6; i++) {
+              char h[3] = { s[i*3], s[i*3+1], 0 };
+              char *end = nullptr;
+              long v = strtol(h, &end, 16);
+              if (end == h || v < 0 || v > 255) return 0;
+              m = (m << 8) | (uint8_t)v;
+            }
+            return m;
+          };
+          uint64_t m = parse_mac(id(mac_radex).state);
+          if (m) {
+            id(ble_radex).set_address(m);
+            ESP_LOGI("boot", "Radex MAC from NVS: %s", id(mac_radex).state.c_str());
+          } else {
+            ESP_LOGW("boot", "Radex MAC not set or invalid — use Web UI to configure");
+          }
 
 esp32:
   board: esp32-s3-devkitc-1
@@ -110,6 +130,8 @@ web_server:
     - id: sg_service
       name: "Сервис"
       sorting_weight: 20
+
+captive_portal:
 
 mdns:
   disabled: false
@@ -413,6 +435,19 @@ button:
       sorting_group_id: sg_service
       sorting_weight: 130
 
+  # Применить runtime MAC из text entity и перезагрузиться.
+  - platform: template
+    name: "Применить MAC и перезагрузить"
+    id: apply_mac_btn
+    icon: "mdi:bluetooth-connect"
+    on_press:
+      - lambda: "ESP_LOGI(\"mac\", \"Applying MAC: %s\", id(mac_radex).state.c_str());"
+      - delay: 1s
+      - lambda: "App.safe_reboot();"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 160
+
   # Manual override: запускает send_narodmon независимо от switch.
   # БАН HARD HOLD 2026-06-14 — НЕ нажимать без явного «да» оператора.
   - platform: template
@@ -464,6 +499,21 @@ select:
       sorting_weight: 220
 
 text:
+  # Runtime BLE MAC — задаётся через Web UI после прошивки.
+  # После сохранения нажать кнопку "Применить MAC и перезагрузить".
+  - platform: template
+    name: "MAC Radex (AA:BB:CC:DD:EE:FF)"
+    id: mac_radex
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    mode: text
+    max_length: 17
+    icon: "mdi:bluetooth"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 155
+
   - platform: template
     name: "Имя метрики: радон"
     id: nm_radon

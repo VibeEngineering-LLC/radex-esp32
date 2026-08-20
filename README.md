@@ -37,18 +37,53 @@ Radex MR107ion ─BLE READ-poll─► ESP32 ─Web UI v3─► браузер
 
 ## Какая прошивка для какой платы
 
-В скилле — **четыре YAML** на одной кодовой базе. Различия: целевой ESP32-модуль,
+В скилле — **пять YAML** на одной кодовой базе. Различия: целевой ESP32-модуль,
 сценарий применения, Web UI layout.
 
 | Прошивка | Целевая плата | Что особенного | Когда выбирать |
 |---|---|---|---|
-| **`firmware/radex_gateway_s3.yaml`** *(актуальная, 2026-06-17)* | **ESP32-S3-DevKitC-1** (`board: esp32-s3-devkitc-1`, framework=arduino) | BLE-клиент к 1×MR107ion, Web Server v3 + Basic Auth + sorting_groups (Data / Service), ESPHome API encryption, watchdog WiFi, Народмон-инфраструктура (switch ALWAYS_OFF, 4 протокола), USB-C, 4 параллельных BLE-слота | Готовый production-шлюз для **одного** MR107ion на новой плате S3 |
+| **`firmware/radex_gateway_s3_n16r8.yaml`** *(рекомендуемая, 2026-08-20)* | **ESP32-S3-DevKitC-1 N16R8** (16 МБ Flash, 8 МБ PSRAM octal), framework=arduino | Профиль платы задан явно: `flash_size: 16MB` + блок `psram: {mode: octal, speed: 80MHz}`. MAC прибора в прошивку **не зашит** — плата сама ищет Radex в эфире по имени (`MR107*` / `Radex*`) или по UUID сервиса `FE651700-…` и запоминает найденный адрес вместе с типом адреса в NVS. Ручной ввод MAC через Web UI сохранён и имеет приоритет. В Web UI добавлены поле «Найденный прибор Radex», кнопка «Забыть прибор и искать заново», датчики «Свободная память» и «Свободная PSRAM». `api:` без ключа шифрования (сборка публичная), Web UI закрыт Basic Auth | Новая установка на плату N16R8. Единственный вариант, который можно поставить **готовым бинарником без пересборки** — в том числе через прошивальщик (см. ниже) |
+| **`firmware/radex_gateway_s3.yaml`** *(актуальная, 2026-06-17)* | **ESP32-S3-DevKitC-1** (`board: esp32-s3-devkitc-1`, framework=arduino) | BLE-клиент к 1×MR107ion, Web Server v3 + Basic Auth + sorting_groups (Data / Service), ESPHome API encryption, watchdog WiFi, Народмон-инфраструктура (switch ALWAYS_OFF, 4 протокола), USB-C, 4 параллельных BLE-слота | Готовый production-шлюз для **одного** MR107ion, если вы собираете прошивку сами. Два ограничения: MAC прибора нужен уже на этапе компиляции (`ble_client.mac_address` — обязательное поле схемы), а профиль памяти платы не задан — ESPHome берёт дефолтные 4 МБ флеша и PSRAM не включает |
 | `firmware/radex_gateway_s3_baseline.yaml` | ESP32-S3-DevKitC-1 | Чистый baseline без сенсоров (BLE/API/Web UI без логики опроса) — для проверки железа и OTA | Первая прошивка новой платы S3 (smoke-тест перед накатом полной прошивки) |
 | `firmware/radex_gateway.yaml` | ESP32-DevKitC (WROOM-32 / WROVER), framework=esp-idf | v0.3.0-step8 (последний шаг — `bluetooth_proxy` закомментирован), BLE READ-poll 4 handle round-robin, две таблицы Web UI v3 («Данные» / «Сервис»), `web_server.log: false` против json:111 | Старая плата ESP32-DevKitC, ESP-IDF |
 | `firmware/radex_gateway_v2.yaml` | ESP32-DevKitC | Альтернатива на Web Server v2 (одна плоская таблица с тематическими префиксами `1.x` / `2.x` / `3.x` / `4.x`) | Нужен «всё разом» без переключения групп |
 
 Все прошивки слушают тот же протокол MR107ion (custom service `FE651Y00-…`, READ-poll
 ATT-handle через бэкбон `FE651700-…`), различаются только UI / стек / HARD-правила.
+
+### Установка без пересборки — через прошивальщик
+
+Для `radex_gateway_s3_n16r8.yaml` в релизах этого репозитория лежит готовый образ
+`firmware.factory.bin`. Его умеет заливать
+[прошивальщик](https://github.com/VibeEngineering-LLC/atomspectra-waterfall-esp32-flasher) —
+он сам скачивает ассет из релиза и пишет его на плату. Ни Python, ни ESPHome, ни правки
+YAML для этого не нужны.
+
+Дальше по шагам:
+
+1. Залить образ на плату.
+2. Плата ищет сеть `radex-gw-setup`. Такой сети не существует — это сделано намеренно,
+   поэтому плата поднимает свою точку доступа **`radex-gw-s3 Fallback`** с паролем
+   `radexgw123`.
+3. Подключиться к этой точке с телефона или ноутбука, в captive portal выбрать свою
+   Wi-Fi 2.4 ГГц и ввести её пароль. Плата перезагрузится и уйдёт в вашу сеть.
+4. Открыть `http://radex-gw-s3.local/`, логин `radex`, пароль `radex`.
+5. MAC прибора вводить не нужно: плата находит Radex в эфире сама и запоминает его.
+   В группе «Сервис» появится поле «Найденный прибор Radex» с адресом, в группе
+   «Данные» — радон, температура и влажность.
+
+На проверке прошивка нашла прибор Radex MR107ion в течение минуты после старта и стала
+отдавать показания. Адрес прибора оказался random-типа, поэтому вместе с адресом
+сохраняется и его тип — иначе подключение к такому прибору молча не состоится.
+
+**Пароли из этого списка опубликованы и потому секретом не являются** — они лежат в
+`firmware/secrets.public.yaml`, с которым собран публичный бинарник. Пока плата стоит в
+режиме настройки, к её точке доступа может подключиться любой, кто рядом. Тому, кого это
+не устраивает, нужно собрать прошивку самому: скопировать `secrets.public.yaml` в
+`secrets.yaml`, вписать свои значения `ap_password`, `ota_password`,
+`web_server_auth_user` / `web_server_auth_pass` и пересобрать. Если в `secrets.yaml`
+сразу указать свою домашнюю сеть, плата подключится к ней при первом старте и точку
+доступа поднимать не станет.
 
 ---
 
@@ -126,8 +161,8 @@ ATT-handle через бэкбон `FE651700-…`), различаются то�
 ### 1. Подготовить secrets
 
 ```powershell
-git clone https://github.com/Verter73/claude-skills.git
-cd claude-skills\radex-esp32\firmware\
+git clone https://github.com/VibeEngineering-LLC/radex-esp32.git
+cd radex-esp32\firmware\
 Copy-Item secrets.example.yaml secrets.yaml
 ```
 
@@ -319,8 +354,10 @@ YAML): любые ребуты / json:111 / OOM на S3 → вернуть `log:
 
 ### Итог: что выбрать
 
-- ⭐ **ESP32-S3-DevKitC-1 N16R8** → `radex_gateway_s3.yaml` (arduino, log: true). Рекомендованная
-  актуальная конфигурация.
+- ⭐ **ESP32-S3-DevKitC-1 N16R8** → `radex_gateway_s3_n16r8.yaml` (arduino, log: true) —
+  профиль памяти платы задан явно, MAC прибора искать не нужно, ставится готовым образом.
+- **ESP32-S3-DevKitC-1 N16R8, сборка своими руками с MAC в `secrets.yaml`** →
+  `radex_gateway_s3.yaml` (arduino, log: true).
 - **Классический ESP32-DevKitC v4** (если уже на руках) → `radex_gateway.yaml`
   (esp-idf, v0.3.0-step8, log: false, `bluetooth_proxy: # active: true` закомментирован).
   Стабилен в этой конфигурации; на esp-idf с другими настройками — нет.
@@ -560,11 +597,13 @@ radex-esp32/
 ├── README.md                          ← эта инструкция
 ├── SKILL.md                           ← обзор семейства + методология RE нового прибора
 ├── firmware/
+│   ├── radex_gateway_s3_n16r8.yaml    ← РЕКОМЕНДУЕМАЯ (ESP32-S3-DevKitC-1 N16R8, автопоиск прибора)
 │   ├── radex_gateway_s3.yaml          ← АКТУАЛЬНАЯ (ESP32-S3-DevKitC-1)
 │   ├── radex_gateway_s3_baseline.yaml ← baseline для S3 (smoke-тест)
 │   ├── radex_gateway.yaml             ← v0.3.0-step8 (ESP32-DevKitC, ESP-IDF, Web UI v3)
 │   ├── radex_gateway_v2.yaml          ← альтернатива (Web Server v2, плоский UI)
 │   ├── secrets.example.yaml           ← шаблон секретов
+│   ├── secrets.public.yaml            ← значения, с которыми собран публичный бинарник
 │   ├── CHANGELOG.md                   ← история версий
 │   ├── include/                       ← C-хедеры (BLE hooks)
 │   ├── www/                           ← кастом-CSS/JS для v2 (log_limit.css, reorder_v2.js)

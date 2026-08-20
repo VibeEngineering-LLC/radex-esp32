@@ -33,10 +33,12 @@ Quarta-Rad / QuartaRad (Москва, [quartarad.com](https://quartarad.com), п
 `flash_size: 16MB` + `psram: {mode: octal, speed: 80MHz}`; без них ESPHome берёт дефолт 4 МБ, а
 определение платы в PlatformIO PSRAM не включает вовсе. Итог: раздел приложения 7.75 МБ (два
 OTA-слота), 8,0 МБ PSRAM свободно на живой плате (инцидент **P-020**).
-**MAC прибора не зашит в прошивку:** лямбда `on_ble_advertise` ловит имя `MR107*`/`Radex*` либо
-рекламируемый сервис `FE651700-…`, ставит адрес через `set_address()`, дальше подключает
-`auto_connect`. Адрес **и тип адреса** хранятся в NVS (у проверенного прибора адрес random-типа,
-`set_address()` тип не меняет). Ручной ввод MAC в Web UI сохранён и имеет приоритет, кнопка
+**MAC прибора не зашит в прошивку:** лямбда `on_ble_advertise` ловит имя, начинающееся на `MR107`
+или `Radex` (регистр не важен), либо рекламируемый сервис `FE651700-…` (принимаются оба варианта
+последнего байта — `…8AAA` и `…8AAB`), ставит адрес через `set_address()`, дальше подключает
+`auto_connect`. Адрес и тип адреса хранятся в NVS, чтобы после ребута не ждать эфира; сам тип
+ESPHome восстанавливает из рекламы при обнаружении прибора (`parse_device()`), так что его
+хранение — подстраховка. Ручной ввод MAC в Web UI сохранён и имеет приоритет, кнопка
 «Забыть прибор и искать заново» сбрасывает найденное. Публичная сборка: `api:` без ключа
 шифрования, Web UI под Basic Auth, значения сборки — `firmware/secrets.public.yaml`. Релиз
 **v0.4.0** с `firmware.factory.bin` — [`firmware/CHANGELOG.md`](firmware/CHANGELOG.md), README, INSTALL.md.
@@ -90,7 +92,7 @@ step1 sensor ОА радона / uptime / RSSI; step2 sliding-window (час 60�
 
 1. **btsnoop HCI capture** от Android RadexM (основной путь): Developer options → HCI snoop
    log → ON, наработать 5+ мин, `adb bugreport` → `btsnoop_hci.log` → Wireshark/Python-парсер.
-2. **ESP32 [ble-explorer](https://github.com/Verter73/claude-skills/tree/master/ble-explorer)** — верификация UUID + чтение 0x2901 дескрипторов (btsnoop их не содержит).
+2. **ESP32 `ble-explorer`** (внутренний инструмент того же автора) — верификация UUID + чтение 0x2901 дескрипторов (btsnoop их не содержит).
 3. **Косвенные источники** (USB-доноры Radex One / RD1212) для encoding-гипотез.
 
 Полные шаги (btsnoop-извлечение, ble-explorer-проход, гипотезы payload) — [`references/re-methodology.md`](references/re-methodology.md).
@@ -103,7 +105,7 @@ step1 sensor ОА радона / uptime / RSSI; step2 sliding-window (час 60�
 
 ## Связанные скиллы
 
-- **[ble-explorer](https://github.com/Verter73/claude-skills/tree/master/ble-explorer)** — in-field verification GATT-карт + Notify ring buffer.
+- **`ble-explorer`** (внутренний, публичного адреса нет) — in-field verification GATT-карт + Notify ring buffer.
 - **[atomfast-esp32](https://github.com/VibeEngineering-LLC/atomfast-esp32)** — параллельный шлюз AtomFast (Notify-based).
 - **RadonEye Plus2** (FTLAB) — радон-детектор, Notify-based, отдельный C3-шлюз.
 

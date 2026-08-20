@@ -29,7 +29,10 @@
 #         adv-пакете; connect() из лямбды НЕ вызывается - он обошёл бы
 #         stop_scan_() (esp32_ble_tracker.cpp:900-923);
 #       - найденный MAC и тип адреса лежат в NVS (globals restore_value),
-#         после ребута адрес ставится в on_boot без ожидания эфира.
+#         после ребута адрес ставится в on_boot без ожидания эфира. Тип адреса
+#         ESPHome и сам восстанавливает из рекламы, когда находит прибор
+#         (parse_device, ble_client_base.cpp:109), так что хранение типа -
+#         подстраховка на случай ручного пути, а не условие работы.
 #     Ручной ввод MAC через Web UI сохранён и имеет приоритет над эфиром.
 #
 #  3. ПУБЛИЧНАЯ СБОРКА: api без encryption-ключа. Ключ в общем бинарнике
@@ -233,9 +236,13 @@ globals:
     type: uint64_t
     restore_value: true
     initial_value: '0'
-  # Тип адреса (public/random) обязателен вместе с самим адресом: set_address()
-  # его не меняет, по умолчанию остаётся PUBLIC (ble_client_base.h:124),
-  # и для прибора со случайным адресом подключение молча не состоится.
+  # Тип адреса (public/random) хранится рядом с самим адресом. set_address()
+  # тип не меняет и оставляет значение по умолчанию, PUBLIC
+  # (ble_client_base.h:124), поэтому при ручной установке адреса тип надо
+  # задавать отдельно. На пути через эфир этим занимается сам ESPHome:
+  # parse_device() присваивает remote_addr_type_ из рекламы при каждом
+  # совпадении адреса (ble_client_base.cpp:109). Так что запись здесь -
+  # подстраховка, а не условие работы.
   - id: radex_addr_type_nvs
     type: uint8_t
     restore_value: true
@@ -602,9 +609,11 @@ button:
 switch:
   - platform: template
     name: "Выгружать на Народмон"
+    # restore_mode идёт первым параметром после name намеренно: значение
+    # safety-критично, и его место в файле закреплено правилом контура.
+    restore_mode: ALWAYS_OFF
     id: narodmon_enabled
     icon: "mdi:cloud-upload"
-    restore_mode: ALWAYS_OFF
     optimistic: true
     web_server:
       sorting_group_id: sg_service

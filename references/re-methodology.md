@@ -25,8 +25,9 @@
 ### 2. ESP32 ble-explorer (верификация + 0x2901 descriptors)
 
 Для разметки `handle → field name` btsnoop недостаточен — приложение использует
-жёстко прошитые UUID, не читает User Description (0x2901). Скилл [ble-explorer](https://github.com/Verter73/claude-skills/tree/master/ble-explorer)
-с прошивкой `explorer.yaml v0.1.1+` через Web UI:
+жёстко прошитые UUID, не читает User Description (0x2901). Скилл `ble-explorer`
+(внутренний инструмент того же автора, публичного адреса нет) с прошивкой
+`explorer.yaml v0.1.1+` через Web UI:
 - BLE-scan → найти прибор по имени `MR107ion XXXX` / `RD1212 ...`.
 - Подставить MAC в Web UI → Connect → GATT enum → подтвердить custom UUIDs.
 - Прочитать дескрипторы 0x2901 каждой характеристики FE651600/FE651700 →

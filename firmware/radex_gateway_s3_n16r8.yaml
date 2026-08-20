@@ -1,0 +1,942 @@
+# ======================================================================
+#  radex_gateway_s3_n16r8.yaml - Radex MR107ion BLE -> Web UI
+#  Плата: ESP32-S3-DevKitC-1 N16R8 (16 MB Flash, 8 MB PSRAM octal)
+#
+#  Та же плата, что в проекте AtomSpectra-водопад. Версия отличается от
+#  базового radex_gateway_s3.yaml тремя вещами:
+#
+#  1. ПРОФИЛЬ ПЛАТЫ.
+#     - esp32.flash_size: 16MB. Без этого ESPHome берёт дефолт 4MB
+#       (esphome/components/esp32/__init__.py:1575) и на N16R8 используется
+#       четверть флеша: раздел приложения меньше, чем позволяет плата.
+#     - psram: mode octal, speed 80MHz. На arduino-фреймворке компонент
+#       ставит board_build.arduino.memory_type = qio_opi
+#       (esphome/components/psram/__init__.py:178-181) - это и есть N16R8.
+#       Без блока psram 8 MB внешней памяти платой не используются вовсе.
+#
+#  2. АВТОПОИСК ПРИБОРА (MAC не зашит в прошивку).
+#     Базовая версия требовала MAC прибора на этапе компиляции
+#     (ble_client.mac_address - cv.Required, ble_client/__init__.py:76),
+#     поэтому бинарник годился только своему автору. Здесь MAC
+#     подставляется в рантайме:
+#       - ble_client объявлен с плейсхолдером 00:00:00:00:00:00 (валиден,
+#         config_validation.py:1159-1175), при нулевом адресе клиент спит:
+#         parse_device() выходит по address_ == 0 (ble_client_base.cpp:95-111);
+#       - лямбда on_ble_advertise ищет в эфире Radex по имени (MR107*/Radex*)
+#         или по сервису FE651700-...-8AAA и вызывает set_address()
+#         (ble_client_base.h:51) + set_remote_addr_type() (.h:85);
+#       - дальше штатный auto_connect подключается сам на следующем
+#         adv-пакете; connect() из лямбды НЕ вызывается - он обошёл бы
+#         stop_scan_() (esp32_ble_tracker.cpp:900-923);
+#       - найденный MAC и тип адреса лежат в NVS (globals restore_value),
+#         после ребута адрес ставится в on_boot без ожидания эфира.
+#     Ручной ввод MAC через Web UI сохранён и имеет приоритет над эфиром.
+#
+#  3. ПУБЛИЧНАЯ СБОРКА: api без encryption-ключа. Ключ в общем бинарнике
+#     не даёт защиты (одинаков у всех) - кому нужен, добавляет блок
+#     encryption и пересобирает. Web UI при этом закрыт Basic Auth.
+#
+#  Наследуется без изменений от базовой версии: READ-poll хук по GATT
+#  (include/radex_read_hook.h), скользящие средние час/сутки, Web Server v3
+#  с sorting_groups, инфраструктура Народмона (ВЫКЛЮЧЕНА, switch имеет
+#  restore_mode: ALWAYS_OFF - safety-критично).
+# ======================================================================
+
+substitutions:
+  device_name: radex-gw-s3
+  device_friendly: "Radex Gateway S3 N16R8"
+  # Локальный путь — переопределите под свою систему (вынесен из C:\Users\... во избежание UnicodeDecodeError).
+  build_path: ./.esphome_build/radex-gw-s3n16r8
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${device_friendly}
+  comment: "Radex MR107ion -> Web UI (ESP32-S3, arduino, Narodmon infra OFF)"
+  min_version: 2025.8.0
+  build_path: ${build_path}
+  includes:
+    - include/esp_diag.h
+    - include/radex_read_hook.h
+  on_boot:
+    priority: -300
+    then:
+      - lambda: |-
+          id(ble_connects).publish_state((float) id(ble_connect_count));
+          id(ble_disconnects).publish_state((float) id(ble_disconnect_count));
+          ESP_LOGI("boot", "Radex Gateway S3 step3 (arduino, Narodmon infra OFF by default) booted, web UI: http://%s.local/", "${device_name}");
+          // ── Адрес прибора: ручной ввод > запомненный в NVS > поиск в эфире ──
+          auto parse_mac = [](const std::string &s) -> uint64_t {
+            if (s.length() != 17) return 0;
+            uint64_t m = 0;
+            for (int i = 0; i < 6; i++) {
+              char h[3] = { s[i*3], s[i*3+1], 0 };
+              char *end = nullptr;
+              long v = strtol(h, &end, 16);
+              if (end == h || v < 0 || v > 255) return 0;
+              m = (m << 8) | (uint8_t)v;
+            }
+            return m;
+          };
+          uint64_t manual = parse_mac(id(mac_radex).state);
+          if (manual) {
+            // Ручной ввод старше автопоиска: пользователь знает, какой прибор ему нужен.
+            id(ble_radex).set_address(manual);
+            ESP_LOGI("radex", "MAC задан вручную: %s", id(mac_radex).state.c_str());
+          } else if (id(radex_mac_nvs) != 0) {
+            // Прибор уже найден в прошлой жизни платы - не ждём эфира.
+            id(ble_radex).set_address(id(radex_mac_nvs));
+            id(ble_radex).set_remote_addr_type((esp_ble_addr_type_t) id(radex_addr_type_nvs));
+            ESP_LOGI("radex", "MAC из памяти: %012llX", (unsigned long long) id(radex_mac_nvs));
+          } else {
+            ESP_LOGI("radex", "MAC неизвестен - ищу прибор Radex в эфире");
+          }
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  # N16R8: 16 MB флеша. Дефолт ESPHome - 4MB, на этой плате он режет
+  # раздел приложения вчетверо (esp32/__init__.py:1575).
+  flash_size: 16MB
+  framework:
+    type: arduino
+
+# 8 MB внешней PSRAM в октальном режиме - вторая половина маркировки N16R8.
+# На arduino компонент выставляет memory_type qio_opi (psram/__init__.py:178-181).
+psram:
+  mode: octal
+  speed: 80MHz
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  output_power: 8.5dB
+  ap:
+    ssid: "radex-gw-s3 Fallback"
+    password: !secret ap_password
+
+# Публичная сборка: без encryption-ключа. Общий для всех ключ защитой не является;
+# кому нужно шифрование HA-API - добавляет сюда блок encryption и пересобирает.
+api:
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    id: ota_esphome
+    password: !secret ota_password
+  - platform: web_server
+
+# HARD-правила проекта:
+#   - log: true   → ИСКЛЮЧЕНИЕ для S3 (2026-06-17, оператор): нативная вкладка
+#                   логов в Web UI v3. Если пойдут ребуты / json:111 / OOM —
+#                   откатить в false без переспроса и доложить (INC-05-like).
+#                   Аналогичное исключение действует для C3 (radon_ha_gateway_c3).
+#   - auth        → срезает phantom XRay keep-alive на 401 (INC-10).
+web_server:
+  version: 3
+  port: 80
+  include_internal: false
+  local: true
+  log: true
+  auth:
+    username: !secret web_server_auth_user
+    password: !secret web_server_auth_pass
+  sorting_groups:
+    - id: sg_data
+      name: "Данные"
+      sorting_weight: 10
+    - id: sg_service
+      name: "Сервис"
+      sorting_weight: 20
+
+captive_portal:
+
+mdns:
+  disabled: false
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Moscow
+
+# HTTP-клиент для Народмона. verify_ssl: false — на arduino+S3 root CA
+# bundle не подгружается; HTTPS handshake работает без проверки серта.
+http_request:
+  verify_ssl: false
+  timeout: 5s
+  useragent: "esphome-radex-gw-s3/1.0"
+
+# Источник данных для датчиков памяти ниже.
+debug:
+  update_interval: 60s
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 640ms
+    window: 32ms
+    # active: true обязателен - имя прибора и список сервисов часто приходят
+    # не в самой рекламе, а в scan response.
+    active: true
+  on_ble_advertise:
+    then:
+      - lambda: |-
+          // Вызывается на КАЖДЫЙ пакет от КАЖДОГО устройства - выходим сразу,
+          // если адрес прибора уже известен.
+          if (id(radex_mac_nvs) != 0) return;
+          if (id(mac_radex).state.length() == 17) return;  // задан вручную
+
+          std::string n = x.get_name();
+          bool match = (n.rfind("MR107", 0) == 0) ||
+                       (n.rfind("Radex", 0) == 0) ||
+                       (n.rfind("RADEX", 0) == 0) ||
+                       (n.rfind("radex", 0) == 0);
+
+          // Запасной признак - фирменный сервис Quarta-Rad в рекламе.
+          // В reference скилла соседствуют два написания хвоста (8AAA у сервиса,
+          // 8AAB у характеристик), поэтому принимаем оба: лишняя проверка дешевле
+          // непойманного прибора.
+          if (!match) {
+            static const auto SVC_A = esp32_ble_tracker::ESPBTUUID::from_raw(
+                "fe651700-00b0-4240-ba50-05ca45bf8aaa");
+            static const auto SVC_B = esp32_ble_tracker::ESPBTUUID::from_raw(
+                "fe651700-00b0-4240-ba50-05ca45bf8aab");
+            for (auto &u : x.get_service_uuids()) {
+              if (u == SVC_A || u == SVC_B) { match = true; break; }
+            }
+          }
+          if (!match) return;
+
+          id(radex_mac_nvs) = x.address_uint64();
+          id(radex_addr_type_nvs) = (uint8_t) x.get_address_type();
+          // connect() здесь вызывать НЕЛЬЗЯ: он обойдёт stop_scan_()
+          // (esp32_ble_tracker.cpp:900-923). Ставим адрес - auto_connect
+          // подключится сам на следующем пакете рекламы.
+          id(ble_radex).set_address(id(radex_mac_nvs));
+          id(ble_radex).set_remote_addr_type(x.get_address_type());
+          id(found_mac).publish_state(x.address_str());
+          ESP_LOGI("radex", "Найден прибор: %s  имя='%s'  RSSI=%d dBm",
+                   x.address_str().c_str(), n.c_str(), x.get_rssi());
+
+esp32_ble:
+  max_connections: 1
+
+# bluetooth_proxy УБРАН (2026-06-21): WiFi-интерференция 2.4 ГГц.
+
+globals:
+  # Найденный в эфире прибор. Переживает перезагрузку, поэтому искать заново
+  # после каждого ребута не нужно (globals/__init__.py:47 -> NVS).
+  - id: radex_mac_nvs
+    type: uint64_t
+    restore_value: true
+    initial_value: '0'
+  # Тип адреса (public/random) обязателен вместе с самим адресом: set_address()
+  # его не меняет, по умолчанию остаётся PUBLIC (ble_client_base.h:124),
+  # и для прибора со случайным адресом подключение молча не состоится.
+  - id: radex_addr_type_nvs
+    type: uint8_t
+    restore_value: true
+    initial_value: '0'
+
+  - id: ble_connect_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+  - id: ble_disconnect_count
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+ble_client:
+  # Нулевой адрес - штатный способ сказать "прибор пока неизвестен":
+  # схема требует mac_address (ble_client/__init__.py:76), а parse_device()
+  # при address_ == 0 просто не подключается (ble_client_base.cpp:95-111).
+  # Реальный адрес ставится в рантайме - из NVS в on_boot или из эфира.
+  - mac_address: "00:00:00:00:00:00"
+    id: ble_radex
+    auto_connect: true
+    on_connect:
+      - lambda: |-
+          id(ble_connect_count) += 1;
+          ESP_LOGI("radex", "===== Radex CONNECTED (#%u) =====", (unsigned) id(ble_connect_count));
+          id(ble_connects).publish_state((float) id(ble_connect_count));
+          id(ble_connected).publish_state(true);
+    on_disconnect:
+      - lambda: |-
+          id(ble_disconnect_count) += 1;
+          ESP_LOGW("radex", "Radex DISCONNECT (#%u)", (unsigned) id(ble_disconnect_count));
+          id(ble_disconnects).publish_state((float) id(ble_disconnect_count));
+          id(ble_connected).publish_state(false);
+
+sensor:
+  # ─── ПАМЯТЬ (диагностика) ───
+  # Свободная PSRAM показывает, работает ли внешняя память платы N16R8.
+  # Пустое значение или ноль - её нет: либо плата не N16R8, либо прошивка
+  # собрана без блока psram (ровно этот случай разобран в инциденте P-020).
+  - platform: debug
+    free:
+      name: "Свободная память"
+      id: heap_free
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_service
+        sorting_weight: 190
+    psram:
+      name: "Свободная PSRAM"
+      id: psram_free
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_service
+        sorting_weight: 191
+
+  # ─── ДАННЫЕ (sg_data) ───
+  - platform: template
+    name: "ОА радона (последняя)"
+    id: radon_last
+    unit_of_measurement: "Bq/m³"
+    accuracy_decimals: 1
+    icon: "mdi:radioactive"
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 10
+
+  - platform: template
+    name: "ОА радона (среднее, прибор)"
+    id: radon_avg_device
+    unit_of_measurement: "Bq/m³"
+    accuracy_decimals: 1
+    icon: "mdi:radioactive-circle"
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 20
+
+  # ── step2 (2026-06-17): скользящие средние ОА за час и за день ──
+  # Сэмплируем radon_last каждые 60 с; sliding_window_moving_average даёт
+  # rolling-average по окну. Сэмплы при отсутствии BLE-связи отбрасываются
+  # (lambda возвращает NaN → filter_out: nan), чтобы зомби-значения не
+  # засоряли среднее. До наполнения окна публикуется среднее доступных
+  # сэмплов (send_first_at: 1, send_every: 1 → виден сразу после первого
+  # BLE-чтения, обновляется ежеминутно).
+  #   hour: window 60 × 60 c = 60 минут; ~240 байт.
+  #   day : window 1440 × 60 c = 24 часа; ~5.6 KB DRAM.
+  - platform: template
+    name: "ОА радона (среднее, час)"
+    id: radon_avg_hour
+    unit_of_measurement: "Bq/m³"
+    accuracy_decimals: 1
+    icon: "mdi:timer-outline"
+    state_class: measurement
+    update_interval: 60s
+    lambda: |-
+      if (id(radon_last).has_state() && id(ble_radex).connected()) {
+        return id(radon_last).state;
+      }
+      return NAN;
+    filters:
+      - filter_out: nan
+      - sliding_window_moving_average:
+          window_size: 60
+          send_every: 1
+          send_first_at: 1
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 25
+
+  - platform: template
+    name: "ОА радона (среднее, день)"
+    id: radon_avg_day
+    unit_of_measurement: "Bq/m³"
+    accuracy_decimals: 1
+    icon: "mdi:calendar-today"
+    state_class: measurement
+    update_interval: 60s
+    lambda: |-
+      if (id(radon_last).has_state() && id(ble_radex).connected()) {
+        return id(radon_last).state;
+      }
+      return NAN;
+    filters:
+      - filter_out: nan
+      - sliding_window_moving_average:
+          window_size: 1440
+          send_every: 1
+          send_first_at: 1
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 27
+
+  - platform: template
+    name: "Температура"
+    id: temp_radex
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    icon: "mdi:thermometer"
+    device_class: temperature
+    state_class: measurement
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 30
+
+  - platform: template
+    name: "Влажность"
+    id: humidity_radex
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    icon: "mdi:water-percent"
+    device_class: humidity
+    state_class: measurement
+    update_interval: never
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 40
+
+  - platform: uptime
+    name: "Время работы"
+    id: esp_uptime
+    update_interval: 30s
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 50
+
+  # ─── СЕРВИС (sg_service) ───
+  - platform: wifi_signal
+    name: "WiFi сигнал"
+    id: wifi_rssi
+    update_interval: 30s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 10
+
+  - platform: template
+    name: "BLE: успешных коннектов"
+    id: ble_connects
+    accuracy_decimals: 0
+    icon: "mdi:bluetooth-connect"
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 20
+
+  - platform: template
+    name: "BLE: реконнектов всего"
+    id: ble_disconnects
+    accuracy_decimals: 0
+    icon: "mdi:bluetooth-off"
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 30
+
+binary_sensor:
+  - platform: template
+    name: "BLE: Radex подключён"
+    id: ble_connected
+    device_class: connectivity
+    icon: "mdi:bluetooth"
+    web_server:
+      sorting_group_id: sg_data
+      sorting_weight: 5
+
+  - platform: status
+    name: "API подключён"
+    id: api_connected
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 40
+
+text_sensor:
+  # Что именно нашёл автопоиск. Пустое значение = прибор ещё не найден,
+  # и это единственный способ отличить "ищу" от "нашёл, но не отвечает".
+  - platform: template
+    name: "Найденный прибор Radex"
+    id: found_mac
+    icon: "mdi:bluetooth-search"
+    update_interval: never
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 152
+
+  - platform: wifi_info
+    ip_address:
+      name: "IP адрес"
+      id: wifi_ip
+      icon: "mdi:ip-network"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_service
+        sorting_weight: 50
+    ssid:
+      name: "Подключено к WiFi"
+      id: wifi_ssid_t
+      icon: "mdi:wifi"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_service
+        sorting_weight: 60
+    bssid:
+      name: "WiFi BSSID"
+      id: wifi_bssid_t
+      icon: "mdi:access-point"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_service
+        sorting_weight: 70
+    mac_address:
+      name: "ESP32 MAC"
+      id: esp_mac
+      icon: "mdi:network"
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: sg_service
+        sorting_weight: 80
+
+button:
+  - platform: safe_mode
+    id: button_safe_mode
+    name: "Перезагрузить (Safe Mode)"
+    icon: "mdi:restart"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 100
+
+  - platform: factory_reset
+    id: factory_reset_btn
+    name: "Сброс к заводским"
+    icon: "mdi:factory"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 110
+
+  - platform: restart
+    name: "Перезагрузить"
+    icon: "mdi:power-cycle"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 115
+
+  - platform: template
+    name: "Переподключиться к Radex"
+    id: ble_reconnect_btn
+    icon: "mdi:bluetooth-transfer"
+    on_press:
+      - lambda: |-
+          ESP_LOGI("radex", "Manual BLE reconnect requested");
+          id(ble_radex).disconnect();
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 120
+
+  - platform: template
+    name: "Сбросить счётчики BLE"
+    id: ble_counters_reset
+    icon: "mdi:counter"
+    on_press:
+      - lambda: |-
+          id(ble_connect_count) = 0;
+          id(ble_disconnect_count) = 0;
+          id(ble_connects).publish_state(0);
+          id(ble_disconnects).publish_state(0);
+          ESP_LOGI("radex", "BLE counters reset to 0");
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 130
+
+  # Забыть найденный прибор: чистит NVS и запускает поиск заново.
+  # Нужна, когда прибор сменили или автопоиск зацепился не за тот.
+  - platform: template
+    name: "Забыть прибор и искать заново"
+    id: forget_radex
+    icon: "mdi:bluetooth-off"
+    on_press:
+      - lambda: |-
+          id(radex_mac_nvs) = 0;
+          id(radex_addr_type_nvs) = 0;
+          id(found_mac).publish_state("");
+          ESP_LOGW("radex", "Найденный прибор забыт, перезагрузка для нового поиска");
+      - delay: 1s
+      - lambda: "App.safe_reboot();"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 153
+
+  # Применить runtime MAC из text entity и перезагрузиться.
+  - platform: template
+    name: "Применить MAC и перезагрузить"
+    id: apply_mac_btn
+    icon: "mdi:bluetooth-connect"
+    on_press:
+      - lambda: "ESP_LOGI(\"mac\", \"Applying MAC: %s\", id(mac_radex).state.c_str());"
+      - delay: 1s
+      - lambda: "App.safe_reboot();"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 160
+
+  # Manual override: запускает send_narodmon независимо от switch.
+  # БАН HARD HOLD 2026-06-14 — НЕ нажимать без явного «да» оператора.
+  - platform: template
+    name: "Отправить на Народмон сейчас"
+    id: narodmon_send_now
+    icon: "mdi:cloud-upload"
+    on_press:
+      - script.execute: send_narodmon
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 200
+
+# ── Народмон switch + select + editable metric names ──
+# HARD: restore_mode: ALWAYS_OFF — после ребута/safe_mode switch ВСЕГДА OFF,
+# не зависит от прошлого состояния. Это критическая часть соблюдения
+# БАН Народмон HARD HOLD (2026-06-14).
+switch:
+  - platform: template
+    name: "Выгружать на Народмон"
+    id: narodmon_enabled
+    icon: "mdi:cloud-upload"
+    restore_mode: ALWAYS_OFF
+    optimistic: true
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 210
+
+# Выбор протокола (по narodmon-iot SKILL.md):
+#   HTTP GET   — параметры в URL, endpoint http://narodmon.ru/get
+#   HTTP POST  — те же поля form-encoded, endpoint http://narodmon.ru/post
+#   HTTPS POST — то же тело через TLS на https://narodmon.ru/post
+#                (тяжелее mbedTLS handshake).
+#   JSON POST  — JSON-тело на http://narodmon.ru/json, ответ тоже JSON.
+select:
+  - platform: template
+    name: "Способ отправки на Народмон"
+    id: narodmon_method
+    icon: "mdi:upload-network"
+    optimistic: true
+    restore_value: true
+    initial_option: "HTTP GET"
+    options:
+      - "HTTP GET"
+      - "HTTP POST"
+      - "HTTPS POST"
+      - "JSON POST"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 220
+
+text:
+  # Runtime BLE MAC — задаётся через Web UI после прошивки.
+  # После сохранения нажать кнопку "Применить MAC и перезагрузить".
+  - platform: template
+    name: "MAC Radex (AA:BB:CC:DD:EE:FF)"
+    id: mac_radex
+    optimistic: true
+    restore_value: true
+    initial_value: ""
+    mode: text
+    max_length: 17
+    icon: "mdi:bluetooth"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 155
+
+  - platform: template
+    name: "Имя метрики: радон"
+    id: nm_radon
+    optimistic: true
+    restore_value: true
+    mode: text
+    initial_value: "RR1"
+    max_length: 16
+    icon: "mdi:tag-text"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 230
+
+  - platform: template
+    name: "Имя метрики: температура"
+    id: nm_temp
+    optimistic: true
+    restore_value: true
+    mode: text
+    initial_value: "T1"
+    max_length: 16
+    icon: "mdi:tag-text"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 240
+
+  - platform: template
+    name: "Имя метрики: влажность"
+    id: nm_hum
+    optimistic: true
+    restore_value: true
+    mode: text
+    initial_value: "H1"
+    max_length: 16
+    icon: "mdi:tag-text"
+    web_server:
+      sorting_group_id: sg_service
+      sorting_weight: 250
+
+# ── send_narodmon script (manual + auto, 4 метода) ──
+# Тело payload одинаковое: ID=<ESP_MAC>&<RR1>=<radon>&<T1>=<temp>&<H1>=<hum>.
+# Разница только в transport: GET кладёт в URL, остальные — в body.
+script:
+  - id: send_narodmon
+    then:
+      - if:
+          condition:
+            and:
+              - wifi.connected:
+              - lambda: "return !std::isnan(id(radon_last).state);"
+          then:
+            # ── HTTP GET ────────────────────────────────────
+            - if:
+                condition:
+                  lambda: 'return id(narodmon_method).state == "HTTP GET";'
+                then:
+                  - http_request.get:
+                      url: !lambda |-
+                        char url[320];
+                        int n = snprintf(url, sizeof(url),
+                          "http://narodmon.ru/get?ID=%s&%s=%.1f",
+                          id(esp_mac).state.c_str(),
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(url) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(url + n, sizeof(url) - n,
+                            "&%s=%.1f", id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(url) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(url + n, sizeof(url) - n,
+                            "&%s=%.0f", id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
+                        ESP_LOGI("narodmon", "GET %s", url);
+                        return std::string(url);
+                      capture_response: true
+                      on_response:
+                        then:
+                          - lambda: |-
+                              ESP_LOGI("narodmon", "GET HTTP %d, body: %s",
+                                       response->status_code, body.c_str());
+            # ── HTTP POST ───────────────────────────────────
+            - if:
+                condition:
+                  lambda: 'return id(narodmon_method).state == "HTTP POST";'
+                then:
+                  - http_request.post:
+                      url: "http://narodmon.ru/post"
+                      request_headers:
+                        Content-Type: "application/x-www-form-urlencoded"
+                      body: !lambda |-
+                        char body[320];
+                        int n = snprintf(body, sizeof(body),
+                          "ID=%s&%s=%.1f",
+                          id(esp_mac).state.c_str(),
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.1f", id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.0f", id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
+                        ESP_LOGI("narodmon", "POST body: %s", body);
+                        return std::string(body);
+                      capture_response: true
+                      on_response:
+                        then:
+                          - lambda: |-
+                              ESP_LOGI("narodmon", "POST HTTP %d, body: %s",
+                                       response->status_code, body.c_str());
+            # ── HTTPS POST ──────────────────────────────────
+            - if:
+                condition:
+                  lambda: 'return id(narodmon_method).state == "HTTPS POST";'
+                then:
+                  - http_request.post:
+                      url: "https://narodmon.ru/post"
+                      request_headers:
+                        Content-Type: "application/x-www-form-urlencoded"
+                      body: !lambda |-
+                        char body[320];
+                        int n = snprintf(body, sizeof(body),
+                          "ID=%s&%s=%.1f",
+                          id(esp_mac).state.c_str(),
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.1f", id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            "&%s=%.0f", id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
+                        ESP_LOGI("narodmon", "HTTPS POST body: %s", body);
+                        return std::string(body);
+                      capture_response: true
+                      on_response:
+                        then:
+                          - lambda: |-
+                              ESP_LOGI("narodmon", "HTTPS POST HTTP %d, body: %s",
+                                       response->status_code, body.c_str());
+            # ── JSON POST ───────────────────────────────────
+            # http://narodmon.ru/json, Content-Type application/json.
+            # Тело: {"devices":[{"mac":"<MAC>","sensors":[
+            #         {"id":"<RR1>","value":<radon>},
+            #         {"id":"<T1>","value":<temp>},
+            #         {"id":"<H1>","value":<hum>}]}]}
+            - if:
+                condition:
+                  lambda: 'return id(narodmon_method).state == "JSON POST";'
+                then:
+                  - http_request.post:
+                      url: "http://narodmon.ru/json"
+                      request_headers:
+                        Content-Type: "application/json"
+                      body: !lambda |-
+                        char body[384];
+                        int n = snprintf(body, sizeof(body),
+                          "{\"devices\":[{\"mac\":\"%s\",\"sensors\":["
+                            "{\"id\":\"%s\",\"value\":%.1f}",
+                          id(esp_mac).state.c_str(),
+                          id(nm_radon).state.c_str(), id(radon_last).state);
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(temp_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            ",{\"id\":\"%s\",\"value\":%.1f}",
+                            id(nm_temp).state.c_str(), id(temp_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body) && !std::isnan(id(humidity_radex).state)) {
+                          n += snprintf(body + n, sizeof(body) - n,
+                            ",{\"id\":\"%s\",\"value\":%.0f}",
+                            id(nm_hum).state.c_str(), id(humidity_radex).state);
+                        }
+                        if (n > 0 && (size_t) n < sizeof(body)) {
+                          snprintf(body + n, sizeof(body) - n, "]}]}");
+                        }
+                        ESP_LOGI("narodmon", "JSON POST body: %s", body);
+                        return std::string(body);
+                      capture_response: true
+                      on_response:
+                        then:
+                          - lambda: |-
+                              ESP_LOGI("narodmon", "JSON POST HTTP %d, body: %s",
+                                       response->status_code, body.c_str());
+
+light:
+  - platform: esp32_rmt_led_strip
+    rgb_order: GRB
+    pin: GPIO48
+    num_leds: 1
+    chipset: WS2812
+    id: heartbeat_led
+    name: "Heartbeat LED"
+    internal: true
+
+interval:
+  - interval: 2s
+    then:
+      - light.turn_on:
+          id: heartbeat_led
+          brightness: 15%
+          red: 0
+          green: 1
+          blue: 0
+      - delay: 100ms
+      - light.turn_off: heartbeat_led
+
+  # READ-poll round-robin по 4 хэндлам, период каждого = 4 * 4.3 = 17.2 с.
+  # 0x0040 radon_avg_device, 0x0049 radon_last, 0x0058 temperature, 0x005E humidity.
+  # Радон: гард только NaN/отрицательные — верхний предел шкалы MR107ion
+  # не документирован Quarta-Rad, реалистичных потолков ставить не угадываем.
+  # Температура: int16 LE (см. radex_read_hook.h *) — super-set safe.
+  - interval: 4300ms
+    then:
+      - lambda: |-
+          using namespace esphome::radex_hook;
+          static RadexReadHook hook;
+          static bool hook_registered = false;
+          if (!hook_registered) {
+            hook.set_callback([](uint16_t handle, const uint8_t* data, uint16_t len) {
+              if (handle == 0x0040) {
+                float v = decode_float_le(data, len);
+                if (std::isfinite(v) && v >= 0) {
+                  id(radon_avg_device).publish_state(v);
+                  ESP_LOGD("radex", "radon_avg_device=%.2f Bq/m3", v);
+                }
+              } else if (handle == 0x0049) {
+                float v = decode_float_le(data, len);
+                if (std::isfinite(v) && v >= 0) {
+                  id(radon_last).publish_state(v);
+                  ESP_LOGD("radex", "radon=%.2f Bq/m3", v);
+                }
+              } else if (handle == 0x0058) {
+                if (len >= 2) {
+                  int16_t raw = decode_i16_le(data, len);
+                  float t = raw / 10.0f;
+                  if (t >= -40 && t <= 85) {
+                    id(temp_radex).publish_state(t);
+                    ESP_LOGD("radex", "temp=%.1f C", t);
+                  }
+                }
+              } else if (handle == 0x005E) {
+                if (len >= 1) {
+                  float h = (float) data[0];
+                  if (h >= 0 && h <= 100) {
+                    id(humidity_radex).publish_state(h);
+                    ESP_LOGD("radex", "hum=%.0f %%", h);
+                  }
+                }
+              }
+            });
+            id(ble_radex).register_ble_node(&hook);
+            hook_registered = true;
+            ESP_LOGI("radex", "BLEClientNode hook registered (4 handles)");
+          }
+          if (!id(ble_radex).connected()) return;
+          esp_gatt_if_t if_g = (esp_gatt_if_t) id(ble_radex).get_gattc_if();
+          uint16_t conn = id(ble_radex).get_conn_id();
+          static const uint16_t handles[] = {0x0049, 0x0058, 0x005E, 0x0040};
+          static uint8_t cursor = 0;
+          uint16_t h = handles[cursor];
+          cursor = (cursor + 1) % 4;
+          esp_err_t e = esp_ble_gattc_read_char(if_g, conn, h, ESP_GATT_AUTH_REQ_NONE);
+          if (e != ESP_OK) ESP_LOGW("radex_poll", "READ h=0x%04X ret=%d", h, e);
+
+  # WiFi-watchdog: reboot_timeout:0s убрал авто-recovery, свой watchdog
+  # рестартит при зависании WiFi-стека >180с (arch_restart, кросс-фреймворк).
+  - interval: 10s
+    then:
+      - lambda: |-
+          static uint32_t wifi_down_s = 0;
+          if (wifi::global_wifi_component->is_connected()) {
+            wifi_down_s = 0;
+          } else {
+            wifi_down_s += 10;
+            ESP_LOGW("wifi_wd", "WiFi down %us (restart at 180s)", wifi_down_s);
+            if (wifi_down_s >= 180) {
+              ESP_LOGE("wifi_wd", "WiFi hung >180s -> arch_restart()");
+              arch_restart();
+            }
+          }
+
+  # Авто-отправка на Народмон раз в 5 минут — ТОЛЬКО при включённом switch.
+  # БАН HARD HOLD 2026-06-14: switch стартует в OFF (restore_mode: ALWAYS_OFF),
+  # поэтому этот интервал ничего не отправляет, пока оператор явно не включит.
+  - interval: 300s
+    then:
+      - if:
+          condition:
+            lambda: 'return id(narodmon_enabled).state;'
+          then:
+            - script.execute: send_narodmon

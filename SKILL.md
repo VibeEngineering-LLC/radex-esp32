@@ -1,6 +1,6 @@
 ---
 name: radex-esp32
-version: 0.3.0
+version: 0.4.0
 description: >-
   Quarta-Rad / Radex по BLE (прил. RadexM): reverse протокола FE651Y00 + ESPHome-шлюз
   radex_gateway_s3.yaml для ESP32-S3 → HA/narodmon. MR107ion радон, READ-poll (не Notify).
@@ -27,7 +27,21 @@ Quarta-Rad / QuartaRad (Москва, [quartarad.com](https://quartarad.com), п
 3. **`esphome logs --device COMx` ЗАПРЕЩЕНО** — toggle'ит RTS/DTR → ребут ESP32 → обрыв
    BLE-сессии. Использовать OTA-logger или python-serial с `RTS/DTR off`.
 
-## Актуальная прошивка `radex_gateway_s3.yaml` (step3, 2026-06-17)
+## Рекомендуемая прошивка `radex_gateway_s3_n16r8.yaml` (v0.4.0, 2026-08-20)
+
+**Плата ESP32-S3-DevKitC-1 N16R8** (16 МБ Flash, 8 МБ PSRAM octal). Профиль платы задан явно —
+`flash_size: 16MB` + `psram: {mode: octal, speed: 80MHz}`; без них ESPHome берёт дефолт 4 МБ, а
+определение платы в PlatformIO PSRAM не включает вовсе. Итог: раздел приложения 7.75 МБ (два
+OTA-слота), 8,0 МБ PSRAM свободно на живой плате (инцидент **P-020**).
+**MAC прибора не зашит в прошивку:** лямбда `on_ble_advertise` ловит имя `MR107*`/`Radex*` либо
+рекламируемый сервис `FE651700-…`, ставит адрес через `set_address()`, дальше подключает
+`auto_connect`. Адрес **и тип адреса** хранятся в NVS (у проверенного прибора адрес random-типа,
+`set_address()` тип не меняет). Ручной ввод MAC в Web UI сохранён и имеет приоритет, кнопка
+«Забыть прибор и искать заново» сбрасывает найденное. Публичная сборка: `api:` без ключа
+шифрования, Web UI под Basic Auth, значения сборки — `firmware/secrets.public.yaml`. Релиз
+**v0.4.0** с `firmware.factory.bin` — [`firmware/CHANGELOG.md`](firmware/CHANGELOG.md), README, INSTALL.md.
+
+## Прошивка `radex_gateway_s3.yaml` (step3, 2026-06-17)
 
 **Плата ESP32-S3-DevKitC-1** (`esp32-s3-devkitc-1`, variant `esp32s3`, framework **arduino** —
 esp-idf на S3 для arduino_3.0+ нестабилен). BLE-клиент к **Radex MR107ion** (READ-poll, не
@@ -99,11 +113,12 @@ step1 sensor ОА радона / uptime / RSSI; step2 sliding-window (час 60�
 radex-esp32/
 ├── SKILL.md · README.md · INSTALL.md · LICENSE (MIT)
 ├── firmware/
-│   ├── radex_gateway_s3.yaml          ← актуальная S3 (Web UI v3, step3 Народмон ВЫКЛ)
+│   ├── radex_gateway_s3_n16r8.yaml    ← рекомендуемая: S3 N16R8, автопоиск прибора (v0.4.0)
+│   ├── radex_gateway_s3.yaml          ← S3 4 МБ, MAC compile-time (Web UI v3, step3 Народмон ВЫКЛ)
 │   ├── radex_gateway_s3_baseline.yaml ← baseline S3 для smoke-теста
 │   ├── radex_gateway.yaml             ← старая классика ESP32-DevKitC (esp-idf, v0.3.0-step8)
 │   ├── radex_gateway_v2.yaml          ← альт. UX классики (Web Server v2, плоская таблица)
-│   ├── secrets.example.yaml · CHANGELOG.md · archive/
+│   ├── secrets.example.yaml · secrets.public.yaml · CHANGELOG.md · archive/
 └── references/
     ├── mr107ion.md          ← полная reverse-таблица MR107ion (GATT, handles, byte map)
     ├── family-patterns.md   ← общие паттерны линейки (полное тело)

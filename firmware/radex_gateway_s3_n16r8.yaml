@@ -924,11 +924,18 @@ interval:
 
   # WiFi-watchdog: reboot_timeout:0s убрал авто-recovery, свой watchdog
   # рестартит при зависании WiFi-стека >180с (arch_restart, кросс-фреймворк).
+  # ИСПРАВЛЕНО 2026-08-24 (#RADEX-2 продолжение): is_connected() проверяет ТОЛЬКО
+  # STA-соединение. Пока плата осознанно висит в fallback-AP (первичная настройка,
+  # STA ещё не сконфигурирован пользователем) — is_connected() всегда false, и
+  # ватчдог рестартовал плату каждые 180с, обрывая AP и не давая пользователю
+  # закончить WPA2-хендшейк/captive portal. is_ap_active() (wifi_component.h:493,
+  # ap_started_) отличает «осознанно в AP-режиме» от настоящего зависания стека.
   - interval: 10s
     then:
       - lambda: |-
           static uint32_t wifi_down_s = 0;
-          if (wifi::global_wifi_component->is_connected()) {
+          if (wifi::global_wifi_component->is_connected() ||
+              wifi::global_wifi_component->is_ap_active()) {
             wifi_down_s = 0;
           } else {
             wifi_down_s += 10;

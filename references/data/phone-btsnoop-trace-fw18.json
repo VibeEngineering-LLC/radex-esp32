@@ -1,0 +1,38 @@
+{
+  "provenance": {
+    "source": "audit/_drafts/_local/btsnoop_phone_radex_fw18_20260826.log",
+    "sha256": "ADD1A8E05259EE99A6C26017C8B972E3419880271DEA2566D54E87115D40146B",
+    "extracted": "2026-08-26, tshark, кадры 140-260 + 678/682"
+  },
+  "device": {
+    "manufacturer": "Nordic Semiconductor ASA (0x0059)",
+    "lmp_version": "4.2 (0x08)",
+    "lmp_subversion": 152,
+    "supported_le_features_hex": "0x0000000000000021",
+    "supported_le_features_decoded": ["Encryption", "Data Packet Length Extension"],
+    "phy_2m_supported": false
+  },
+  "connection_sequence": [
+    {"frame": 142, "t_rel_s": 0.547, "event": "LE Enhanced Connection Complete", "interval_ms": 30, "latency": 0, "supervision_timeout_s": 5},
+    {"frame": 151, "t_rel_s": 0.573, "event": "Rcvd Exchange MTU Request, Client Rx MTU: 64", "initiator": "device"},
+    {"frame": 152, "t_rel_s": 0.575, "event": "Sent Exchange MTU Response, Server Rx MTU: 517", "initiator": "phone"},
+    {"frame": 153, "t_rel_s": 0.576, "event": "Sent LE Connection Update -> interval 7.5ms(min=max=6), latency 0, timeout 5s"},
+    {"frame": 163, "t_rel_s": 0.663, "event": "LE Data Length Change (auto)", "max_tx_octets": 27, "max_tx_time_us": 328, "max_rx_octets": 162, "max_rx_time_us": 1408},
+    {"frame": 233, "t_rel_s": 1.441, "event": "LE Connection Update Complete", "interval_ms": 7.5, "supervision_timeout_s": 5},
+    {"frame": 238, "t_rel_s": 1.449, "event": "Rcvd L2CAP Connection Parameter Update Request (from device)", "min_interval_ms": 20, "max_interval_ms": 75, "latency": 0, "timeout_s": 4},
+    {"frame": 239, "t_rel_s": 1.449, "event": "Sent Connection Parameter Update Response: Accepted"},
+    {"frame": 246, "t_rel_s": 1.457, "event": "Read Remote Version Information Complete"},
+    {"frame": 247, "t_rel_s": 1.479, "event": "Sent Read By Group Type Request, Primary Service (discovery start)"},
+    {"frame": 249, "t_rel_s": 1.493, "event": "Rcvd Read By Group Type Response: GAP, GATT"},
+    {"frame": 678, "t_rel_s": 8.146, "event": "Sent LE Set Data Length (explicit)", "tx_octets": 64},
+    {"frame": 682, "t_rel_s": 8.313, "event": "LE Data Length Change (explicit result)", "max_tx_octets": 64, "max_tx_time_us": 1408}
+  ],
+  "phy_update_frames_total": 0,
+  "key_facts_for_ble_config_search": [
+    "Прибор молчит на любой ATT-запрос центрального до собственного Exchange MTU Request и ответа на него",
+    "DLE: авто-расширение телефона держит TxOctets=27 (минимум) с t=0.663s до явного запроса на t=8.146s (TxOctets=64), discovery успевает пройти внутри этого окна",
+    "PHY Update отсутствует за весь захват — телефон всю сессию на 1M PHY, прибор 2M не объявляет",
+    "Discovery стартует на t=1.479s, через 30мс после Accepted на L2CAP Connection Parameter Update Request прибора (не по фиксированному таймеру)",
+    "Supervision timeout телефона 5s на всём протяжении, интервал соединения переведён на 7.5ms сразу после MTU-обмена"
+  ]
+}

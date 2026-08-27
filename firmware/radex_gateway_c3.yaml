@@ -46,10 +46,10 @@
 # ======================================================================
 
 substitutions:
-  device_name: radex-gw-s3
-  device_friendly: "Radex Gateway S3 N16R8"
+  device_name: radex-gw-c3
+  device_friendly: "Radex Gateway C3"
   # Локальный путь — переопределите под свою систему (вынесен из C:\Users\... во избежание UnicodeDecodeError).
-  build_path: ./.esphome_build/radex-gw-s3n16r8
+  build_path: ./.esphome_build/radex-gw-c3
 
 esphome:
   name: ${device_name}
@@ -84,8 +84,24 @@ esphome:
           if (manual) {
             // Ручной ввод старше автопоиска: пользователь знает, какой прибор ему нужен.
             id(ble_radex).set_address(manual);
+            // ДЕФЕКТ, найденный 2026-08-26 на живой плате C3: set_address() НЕ меняет
+            // тип адреса, он остаётся дефолтным PUBLIC. У приборов Quarta-Rad адрес
+            // RANDOM (подтверждено: btsnoop телефона кадр 142 "Peer Address Type:
+            // Random Device Address (0x01)"), поэтому auto_connect сверял рекламу с
+            // public-адресом, совпадения не было НИКОГДА и попыток подключения не
+            // возникало вовсе - счётчики "реконнектов/успешных коннектов" стояли на 0
+            // при живом приборе в эфире (проверено сканом с ПК: MR107ion 0166, -63 dBm).
+            // Ветка "MAC из памяти" тип задаёт (ниже), ветка ручного ввода - не задавала.
+            id(ble_radex).set_remote_addr_type(BLE_ADDR_TYPE_RANDOM);
+            // Записываем ручной адрес в те же переменные, что и автопоиск: иначе
+            // диагностический лог RSSI (ниже, on_ble_advertise) сравнивает рекламу
+            // с нулём и молчит - становится невозможно отличить "плата не слышит
+            // прибор" от "слышит, но не подключается". Найдено 2026-08-26 на C3.
+            id(radex_mac_nvs) = manual;
+            id(radex_addr_type_nvs) = (uint8_t) BLE_ADDR_TYPE_RANDOM;
             esphome::radex_hook::set_long_supervision_timeout(manual);
-            ESP_LOGI("radex", "MAC задан вручную: %s", id(mac_radex).state.c_str());
+            ESP_LOGI("radex", "MAC задан вручную: %s (тип адреса RANDOM)",
+                     id(mac_radex).state.c_str());
           } else if (id(radex_mac_nvs) != 0) {
             // Прибор уже найден в прошлой жизни платы - не ждём эфира.
             id(ble_radex).set_address(id(radex_mac_nvs));
@@ -94,6 +110,24 @@ esphome:
             ESP_LOGI("radex", "MAC из памяти: %012llX", (unsigned long long) id(radex_mac_nvs));
           } else {
             ESP_LOGI("radex", "MAC неизвестен - ищу прибор Radex в эфире");
+          }
+
+          // МАКСИМАЛЬНАЯ МОЩНОСТЬ BLE (2026-08-27). Дефолт ESP32-C3 - всего +3 dBm,
+          // чип умеет до +20 (ESP_PWR_LVL_P20 = 15, сверено с esp_bt.h семейства c3).
+          // Влияет не только на дальность: при активном скане плата сама шлёт запрос
+          // имени (SCAN_REQ), и на малой мощности он не долетает - в эфире тогда все
+          // устройства без имён, а автопоиск прибора here ищет именно по имени MR107*.
+          {
+            static const esp_ble_power_type_t pwr_types[] = {
+              ESP_BLE_PWR_TYPE_DEFAULT, ESP_BLE_PWR_TYPE_ADV,
+              ESP_BLE_PWR_TYPE_SCAN,    ESP_BLE_PWR_TYPE_CONN_HDL0,
+            };
+            for (size_t i = 0; i < sizeof(pwr_types)/sizeof(pwr_types[0]); i++) {
+              esp_err_t pe = esp_ble_tx_power_set(pwr_types[i], ESP_PWR_LVL_P20);
+              ESP_LOGI("radex", "TX power type=%d set=%s level=%d",
+                       (int) pwr_types[i], pe == ESP_OK ? "OK" : "FAIL",
+                       (int) esp_ble_tx_power_get(pwr_types[i]));
+            }
           }
           // #RADEX-4 H1 (2026-08-24): голый ble_client: (в отличие от bluetooth_proxy)
           // никогда не вызывает set_connection_type() -> connection_type_ остаётся
@@ -111,11 +145,11 @@ esphome:
           // id(ble_radex).set_connection_type(esphome::esp32_ble_tracker::ConnectionType::V3_WITH_CACHE);
 
 esp32:
-  board: esp32-s3-devkitc-1
-  variant: esp32s3
+  board: seeed_xiao_esp32c3
+  variant: esp32c3
   # N16R8: 16 MB флеша. Дефолт ESPHome - 4MB, на этой плате он режет
   # раздел приложения вчетверо (esp32/__init__.py:1575).
-  flash_size: 16MB
+  flash_size: 4MB
   framework:
     type: arduino
 
@@ -125,9 +159,6 @@ esp32:
 # упала (0 попыток в 2/2 чистых 10-мин окон, вместо стабильных 5-7/10мин на baseline/H1),
 # а сами попытки, когда случались, давали ту же смесь rsn 0x8/0x3e/status=133 - улучшения
 # нет, есть побочная деградация. См. лог тиков radex-ble-loop-run-2026-08-24.md.
-psram:
-  mode: octal
-  speed: 80MHz
 
 logger:
   # ⚠ DEBUG ВРЕМЕННО ОТКЛЮЧЁН (2026-08-24, #RADEX-4 тик 0b): после прошивки с
@@ -239,13 +270,27 @@ esp32_ble_tracker:
           // прибор "медленный". Без этого лога силу сигнала видно только в DEBUG,
           // который заливает канал шумом. Троттлинг 10с, только наш прибор.
           {
+            // ДИАГНОСТИКА СКАНА (2026-08-26, C3): раз в 10 с печатаем, сколько
+            // рекламных пакетов от СКОЛЬКИХ устройств поймано. Это отделяет
+            // "скан вообще не работает / антенна не подключена" от
+            // "эфир слышим, но конкретного прибора в нём нет".
+            static uint32_t adv_total = 0;
+            static uint32_t last_stat_log = 0;
+            adv_total++;
+            uint32_t now_stat = millis();
+            if (now_stat - last_stat_log > 10000) {
+              last_stat_log = now_stat;
+              ESP_LOGI("scan", "эфир: пакетов рекламы всего=%u", (unsigned) adv_total);
+            }
+
             uint64_t want = id(radex_mac_nvs);
             if (want != 0 && x.address_uint64() == want) {
               static uint32_t last_rssi_log = 0;
               uint32_t now_ms = millis();
               if (now_ms - last_rssi_log > 10000) {
                 last_rssi_log = now_ms;
-                ESP_LOGI("radex", "BLE RSSI прибора: %d dBm", x.get_rssi());
+                ESP_LOGI("radex", "BLE RSSI прибора: %d dBm  имя='%s'",
+                         x.get_rssi(), x.get_name().c_str());
               }
             }
           }
@@ -408,13 +453,6 @@ sensor:
       web_server:
         sorting_group_id: sg_service
         sorting_weight: 190
-    psram:
-      name: "Свободная PSRAM"
-      id: psram_free
-      entity_category: diagnostic
-      web_server:
-        sorting_group_id: sg_service
-        sorting_weight: 191
 
   # ─── ДАННЫЕ (sg_data) ───
   - platform: template
@@ -959,28 +997,12 @@ script:
                               ESP_LOGI("narodmon", "JSON POST HTTP %d, body: %s",
                                        response->status_code, body.c_str());
 
-light:
-  - platform: esp32_rmt_led_strip
-    rgb_order: GRB
-    pin: GPIO48
-    num_leds: 1
-    chipset: WS2812
-    id: heartbeat_led
-    name: "Heartbeat LED"
-    internal: true
+# LED-блок S3-версии УБРАН для XIAO ESP32C3: у платы нет ни WS2812, ни
+# пользовательского светодиода вовсе (только неуправляемый CHG-LED заряда),
+# а GPIO48 у C3 не существует — диапазон пинов 0-21.
+# Провенанс: references/xiao-esp32c3-board.md (wiki Seeed, 2026-08-26).
 
 interval:
-  - interval: 2s
-    then:
-      - light.turn_on:
-          id: heartbeat_led
-          brightness: 15%
-          red: 0
-          green: 1
-          blue: 0
-      - delay: 100ms
-      - light.turn_off: heartbeat_led
-
   # READ-poll round-robin по 4 хэндлам, период каждого = 4 * 4.3 = 17.2 с.
   # 0x0040 radon_avg_device, 0x0049 radon_last, 0x0058 temperature, 0x005E humidity.
   # Радон: гард только NaN/отрицательные — верхний предел шкалы MR107ion

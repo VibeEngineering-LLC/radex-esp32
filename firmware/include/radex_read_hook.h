@@ -121,6 +121,10 @@ class RadexReadHook : public ble_client::BLEClientNode {
       this->gattc_if_ = gattc_if;
       this->conn_id_ = param->open.conn_id;
       this->cursor_ = 0;
+      // H55 (2026-08-28): счётчик значений ЗА ЦИКЛ. read_count_ накопительный за всё
+      // время работы платы — в строке «цикл завершён (N значений)» он читался как
+      // «получено N за цикл» и врал: 3 → 6 → 10 при четырёх характеристиках.
+      this->cycle_reads_ = 0;
       this->issue_read_(this->cursor_);
       return;
     }
@@ -131,6 +135,7 @@ class RadexReadHook : public ble_client::BLEClientNode {
                param->read.handle, param->read.status, this->err_count_);
     } else {
       this->read_count_++;
+      this->cycle_reads_++;
       if (this->cb_) {
         this->cb_(param->read.handle, param->read.value, param->read.value_len);
       } else {
@@ -145,7 +150,37 @@ class RadexReadHook : public ble_client::BLEClientNode {
     // Chained: следующий handle сразу, не дожидаясь таймера - ошибка на одном
     // handle не должна останавливать всю цепочку.
     this->cursor_++;
-    if (this->cursor_ < HANDLE_COUNT_) this->issue_read_(this->cursor_);
+    if (this->cursor_ < HANDLE_COUNT_) {
+      this->issue_read_(this->cursor_);
+    } else {
+      // #RADEX-6 H50 (2026-08-28): цикл опроса завершён — РАЗРЫВАЕМ связь сами.
+      // Радону не нужна частая выборка: прибор меряет раз в 60 с, а значение
+      // меняется часами (измерено: 113 чтений подряд дали 6 разных значений).
+      // Оператор: «нет смысла для радона получать данные чаще раза в 10 минут».
+      // Поэтому вместо борьбы за долгую сессию — короткая: подключились,
+      // забрали 4 значения, ушли. Прибор не тратит батарею на удержание линка,
+      // эфир свободен для Wi-Fi, а короткую сессию ESPHome держит уверенно.
+      // #RADEX-6 H51 (2026-08-28): разрыв ОТЛОЖЕННЫЙ, не из колбэка.
+      // H50 рвал связь прямо здесь, внутри обработчика GATTC-события. Первый
+      // цикл проходил, а следующие четыре подряд падали с
+      // «ESP_GATTC_OPEN_EVT in DISCONNECTING state (status=133)»: стек оставался
+      // в несогласованном состоянии после разрыва изнутри его же колбэка.
+      // Теперь ставим флаг, а рвём в loop() — вне контекста события.
+      ESP_LOGI("radex_hook", "цикл опроса завершён: %u из %u значений (всего за сеанс %u) — планирую отключение",
+               (unsigned) this->cycle_reads_, (unsigned) HANDLE_COUNT_,
+               (unsigned) this->read_count_);
+      this->want_disconnect_ = true;
+    }
+  }
+
+  // Вызывается компонентом вне контекста GATTC-события — здесь рвать безопасно.
+  void loop() override {
+    if (!this->want_disconnect_) return;
+    this->want_disconnect_ = false;
+    if (this->parent() != nullptr) {
+      ESP_LOGI("radex_hook", "отключаюсь до следующего планового опроса");
+      this->parent()->disconnect();
+    }
   }
 
  private:
@@ -163,12 +198,14 @@ class RadexReadHook : public ble_client::BLEClientNode {
 
   radex_value_cb_t cb_ = nullptr;
   uint32_t read_count_ = 0;
+  uint32_t cycle_reads_ = 0;  // H55: успешных чтений в ТЕКУЩЕМ цикле
   uint32_t err_count_ = 0;
   uint32_t open_count_ = 0;
   esp_gatt_if_t gattc_if_ = 0;
   uint16_t conn_id_ = 0;
   uint8_t cursor_ = 0;
   bool auto_disc_off_ = false;  // H44: BTA_GATTC_AutoDiscoverEnable(0) вызван
+  bool want_disconnect_ = false;  // H51: разрыв запрошен, ждём loop()
 };
 
 // Утилиты декодирования (LE)

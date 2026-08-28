@@ -118,6 +118,19 @@ esp32:
   flash_size: 16MB
   framework:
     type: arduino
+    # #RADEX-6 H56 (2026-08-28): мощность передатчика BLE +9 → +20 dBm.
+    # ESPHome по умолчанию ставит P9 (индекс уровня 11), диагностическая
+    # C-прошивка собиралась с P20 (индекс 15) — все сравнения «IDF держит
+    # связь, ESPHome рвёт» шли на передатчиках, различающихся на 11 dB.
+    # Симптом, который это объясняет: рекламу прибора слышим уверенно
+    # (-79..-84 dBm), а наш запрос на соединение до него не доходит —
+    # приём у нас хороший, передача слабая.
+    # Шкала индексов: bt/controller/esp32c3/Kconfig.in:214-229 (S3 использует
+    # тот же контроллер). Проверка применения — по сгенерированному
+    # sdkconfig: CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_EFF должен стать 15.
+    sdkconfig_options:
+      CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P9: "n"
+      CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P20: "y"
 
 # 8 MB внешней PSRAM в октальном режиме - вторая половина маркировки N16R8.
 # На arduino компонент выставляет memory_type qio_opi (psram/__init__.py:178-181).
@@ -224,8 +237,17 @@ debug:
 
 esp32_ble_tracker:
   scan_parameters:
+    # #RADEX-6 H49 (2026-08-28): окно 64ms (duty 10%). H48 с 160ms дал больше
+    # подключений, но сессии укоротились с 65 до 16 с — скан отнимает эфир у
+    # активного соединения. Ищем середину между «быстро находит» и «долго держит».
+    # Причина: по замеру H47 соединение существовало лишь 210 с из 897 (23%
+    # времени), то есть основные потери НЕ внутри сессии, а между ними — плата
+    # долго не может поймать рекламу прибора, чтобы переподключиться. При duty 5%
+    # ожидание растягивалось на минуты (наблюдались паузы до 12 мин).
+    # Риск обратной стороны: сканирование отнимает эфир у активного соединения —
+    # если чтения внутри сессии просядут, откатить к 32ms.
     interval: 640ms
-    window: 32ms
+    window: 64ms
     # active: true обязателен - имя прибора и список сервисов часто приходят
     # не в самой рекламе, а в scan response.
     active: true
@@ -349,7 +371,11 @@ ble_client:
   # Реальный адрес ставится в рантайме - из NVS в on_boot или из эфира.
   - mac_address: "00:00:00:00:00:00"
     id: ble_radex
-    auto_connect: true
+    # #RADEX-6 H50 (2026-08-28): постоянное соединение НЕ нужно. Радон меняется
+    # часами, прибор меряет раз в 60 с; опрос идёт по расписанию (см. interval
+    # ниже), после четырёх чтений хук сам разрывает связь. auto_connect: true
+    # заставлял бы плату немедленно подключаться обратно.
+    auto_connect: false
     on_connect:
       - lambda: |-
           id(ble_connect_count) += 1;
@@ -359,19 +385,12 @@ ble_client:
           // #RADEX-4: гарантируем, что radon_last (handles[0]=0x0049) читается
           // ПЕРВЫМ в любой, даже самой короткой сессии - см. globals.radex_read_cursor.
           id(radex_read_cursor) = 0;
-          // #RADEX-4: READ-интервал (4300мс) тикает независимо от момента connect -
-          // без немедленного READ здесь можно ждать до 4.3с первого чтения, а часть
-          // сессий рвётся уже через ~5с (control test: 5.1-6.4с). Читаем 0x0049
-          // (radon_last) СРАЗУ, не дожидаясь ближайшего тика интервала.
-          {
-            esp_gatt_if_t if_g = (esp_gatt_if_t) id(ble_radex).get_gattc_if();
-            uint16_t conn = id(ble_radex).get_conn_id();
-            esp_err_t e = esp_ble_gattc_read_char(if_g, conn, 0x0049, ESP_GATT_AUTH_REQ_NONE);
-            if (e != ESP_OK) ESP_LOGW("radex_poll", "immediate READ h=0x0049 ret=%d", e);
-            // Курсор уже отработал handles[0]=0x0049 здесь - следующий тик таймера
-            // должен пойти на handles[1], иначе повторно перечитает тот же радон.
-            id(radex_read_cursor) = 1;
-          }
+          // #RADEX-6 H52 (2026-08-28): немедленное чтение УБРАНО. Оно писалось,
+          // когда сессии рвались через 5 с и надо было успеть схватить радон до
+          // разрыва. Теперь всё читает цепочка в хуке по OPEN_EVT, а этот вызов
+          // лишь конкурировал с ней за очередь запросов: в логе H51 handle
+          // читались по два раза (6 значений вместо 4), а 0x005E и 0x0040 не
+          // читались вовсе.
     on_disconnect:
       - lambda: |-
           id(ble_disconnect_count) += 1;
@@ -390,7 +409,12 @@ sensor:
     ble_client_id: ble_radex
     name: "BLE: RSSI прибора"
     id: radex_rssi
-    update_interval: 2s
+    # #RADEX-6 H46 (2026-08-28): опрос ВЫКЛЮЧЕН. Замер baseline показал, что
+    # между отправкой нашего ATT-чтения и его провалом (status=133, 9 с ожидания)
+    # проходит ПЯТЬ запросов RSSI — диагностический инструмент, добавленный чтобы
+    # изучать разрывы, сам мешает обмену. Значения при этом скакали -86/-116/-86,
+    # то есть и мерил он недостоверно. Лог: logs/hci/loop_baseline-esphome-v050.log.
+    update_interval: never
     entity_category: diagnostic
     web_server:
       sorting_group_id: sg_service
@@ -970,6 +994,40 @@ light:
     internal: true
 
 interval:
+  # ── ОПРОС ПРИБОРА ПО РАСПИСАНИЮ (#RADEX-6 H50, 2026-08-28) ────────────────
+  # Раз в 10 минут: подключиться → хук прочитает 4 значения цепочкой и сам
+  # разорвёт связь. Постоянное соединение не нужно: прибор меряет раз в 60 с,
+  # радон меняется часами (измерено: 113 чтений дали 6 разных значений).
+  - interval: 10min
+    startup_delay: 30s
+    then:
+      - lambda: |-
+          if (id(radex_mac_nvs) == 0 && id(mac_radex).state.length() != 17) {
+            ESP_LOGW("radex", "опрос пропущен: прибор ещё не выбран");
+            return;
+          }
+          if (id(ble_radex).connected()) {
+            ESP_LOGW("radex", "опрос пропущен: предыдущая сессия ещё не закрыта");
+            return;
+          }
+          // #RADEX-6 H54 (2026-08-28): 4 из 5 плановых опросов падали через ровно
+          // 20 с с «ESP_GATTC_OPEN_EVT in DISCONNECTING state (status=133)» — до
+          // прибора дело не доходило вовсе. Реклама прибора при этом слышна
+          // (-79..-81 dBm), то есть виноват не эфир, а состояние нашего клиента:
+          // после разрыва по таймауту прибора он остаётся в DISCONNECTING и
+          // не принимает connect(). Пишем состояние в лог ПЕРЕД каждой попыткой
+          // (иначе причина отказа снова будет невидима) и вычищаем застрявшее.
+          namespace bt = esphome::esp32_ble_tracker;
+          auto st = id(ble_radex).state();
+          ESP_LOGI("radex", "плановый опрос прибора (клиент: %s)",
+                   bt::client_state_to_string(st));
+          if (st == bt::ClientState::DISCONNECTING || st == bt::ClientState::CONNECTING) {
+            ESP_LOGW("radex", "клиент застрял в %s — сбрасываю в IDLE",
+                     bt::client_state_to_string(st));
+            id(ble_radex).set_state(bt::ClientState::IDLE);
+          }
+          id(ble_radex).connect();
+
   - interval: 2s
     then:
       - light.turn_on:
@@ -1041,17 +1099,11 @@ interval:
             hook_registered = true;
             ESP_LOGI("radex", "BLEClientNode hook registered (4 handles)");
           }
-          if (!id(ble_radex).connected()) return;
-          esp_gatt_if_t if_g = (esp_gatt_if_t) id(ble_radex).get_gattc_if();
-          uint16_t conn = id(ble_radex).get_conn_id();
-          static const uint16_t handles[] = {0x0049, 0x0058, 0x005E, 0x0040};
-          // #RADEX-4 (2026-08-25): курсор вынесен в globals.radex_read_cursor и
-          // сбрасывается на 0 в on_connect - раньше был static здесь и НЕ
-          // сбрасывался между переподключениями (см. комментарий у globals).
-          uint16_t h = handles[id(radex_read_cursor) % 4];
-          id(radex_read_cursor) = (id(radex_read_cursor) + 1) % 4;
-          esp_err_t e = esp_ble_gattc_read_char(if_g, conn, h, ESP_GATT_AUTH_REQ_NONE);
-          if (e != ESP_OK) ESP_LOGW("radex_poll", "READ h=0x%04X ret=%d", h, e);
+          // #RADEX-6 H52 (2026-08-28): круговой опрос по таймеру ОТКЛЮЧЁН.
+          // Единственный опросчик теперь — цепочка в хуке: подключились,
+          // прочитали 4 handle подряд, отключились (H50/H51). Этот блок
+          // оставлен ТОЛЬКО ради регистрации хука выше по коду.
+          return;
 
   # WiFi-watchdog: reboot_timeout:0s убрал авто-recovery, свой watchdog
   # рестартит при зависании WiFi-стека >180с (arch_restart, кросс-фреймворк).

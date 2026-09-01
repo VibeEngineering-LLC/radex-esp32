@@ -1537,25 +1537,50 @@ function drawMeanLine(ctx, points, geom, colors, opts) {
   const validPoints = points.filter(p => p.r !== null);
   if (validPoints.length === 0) { showMeanCard(null, null, null); return; }
 
-  // Вычисление среднего значения
-  let sum = 0;
+  /* #RADEX-174: среднее ВЗВЕШЕННОЕ. Точка, пришедшая после уплотнения истории,
+     несёт поле w — число исходных измерений, свёрнутых в неё. Суточная средняя
+     из 25 измерений и одиночная точка не равноправны: без веса среднее по
+     «Всему времени» расходилось бы с тем, что плата отдаёт в /api/stats, и
+     ошибка была бы тем больше, чем старше данные. Старая плата поля w не
+     отдаёт — тогда вес 1, то есть прежнее поведение. */
+  const wOf = p => (typeof p.w === 'number' && p.w > 0) ? p.w : 1;
+  let sum = 0, wsum = 0;
   for (const point of validPoints) {
-    sum += point.r;
+    const w = wOf(point);
+    sum += point.r * w;
+    wsum += w;
   }
-  const mean = sum / validPoints.length;
+  const mean = sum / wsum;
 
   // Статистическая погрешность: стандартное отклонение выборки, делённое на корень из n,
   // затем нормированное на среднее значение
   let u_stat = 0;
-  if (validPoints.length > 1) {
+  const nRows = validPoints.length;
+  if (nRows > 1 && wsum > 0) {
     let sumSq = 0;
     for (const point of validPoints) {
       const diff = point.r - mean;
-      sumSq += diff * diff;
+      sumSq += diff * diff * wOf(point);
     }
-    const variance = sumSq / (validPoints.length - 1); // выборочная дисперсия
-    const stdDev = Math.sqrt(variance);
-    u_stat = (stdDev / Math.sqrt(validPoints.length)) / mean;
+    /* #RADEX-178. Степеней свободы здесь СТОЛЬКО, СКОЛЬКО СТРОК, а не сколько
+       измерений: рассеяние наблюдается между строками, внутригрупповой разброс
+       уплотнение уничтожило безвозвратно (исходных строк после свёртки нет).
+       Прежняя формула делила на (wsum-1) — то есть считала, что у нас 72
+       независимых наблюдения там, где их пять, и занижала погрешность среднего
+       примерно в sqrt(71/4) ≈ 4 раза.
+
+       Оценка σ² по межстрочному рассеянию: если строка i — среднее wᵢ измерений
+       с дисперсией σ², то Var(xᵢ)=σ²/wᵢ, и Σwᵢ(xᵢ−μ)²/(n−1) — несмещённая
+       оценка σ² при n строках. Стандартная ошибка взвешенного среднего тогда
+       u = sqrt( Σwᵢ(xᵢ−μ)² / ((n−1)·Σwᵢ) ). На неуплотнённых данных все w=1,
+       n=Σw, и выражение тождественно прежнему s/√n — то есть привычное
+       поведение сохраняется в точности.
+
+       Чего эта величина НЕ означает: она не восстанавливает внутрисуточный
+       разброс. Показать «разброс измерений за сутки» по уплотнённому файлу
+       нельзя ничем — эти данные стёрты; здесь считается только погрешность
+       СРЕДНЕГО, и только она и показывается. */
+    u_stat = Math.sqrt(sumSq / ((nRows - 1) * wsum)) / mean;
   }
 
   /* Погрешность ДАННЫХ — паспортная погрешность прибора (по умолчанию 20 %).
@@ -1615,9 +1640,9 @@ function drawMeanLine(ctx, points, geom, colors, opts) {
      opts.deferBadge — возвращаем параметры, drawChart() дорисовывает её
      сам после stroke() линии данных. */
   if (opts && opts.deferBadge) {
-    return { mean, absError, U, count: validPoints.length, geom, color: colors.mean, avoidBox: opts.avoidBox };
+    return { mean, absError, U, count: wsum, geom, color: colors.mean, avoidBox: opts.avoidBox };   /* #RADEX-174: измерений, а не строк */
   }
-  drawMeanPlaque(ctx, mean, absError, U, validPoints.length, geom, colors.mean,
+  drawMeanPlaque(ctx, mean, absError, U, wsum, geom, colors.mean,   /* #RADEX-174: измерений, а не строк */
     { avoidBox: opts && opts.avoidBox });
 }
 
@@ -2120,14 +2145,25 @@ function multiRedraw() {
          ПОСЛЕ линий, чтобы данные её не перечёркивали, и в правом верхнем углу —
          слева там шкала значений. */
       if (overlayPts && overlayPts.length) {
-        const vals = overlayPts.map(p => p.r).filter(v => isFinite(v));
+        /* #RADEX-174: то же взвешивание, что на «Показаниях». Точка после
+           уплотнения несёт w — число свёрнутых в неё измерений; считать её
+           наравне с одиночной значит показать среднее, расходящееся с
+           /api/stats, и завысить точность на порядок. Нет поля — вес 1. */
+        const vals = overlayPts.map(p => ({v: p.r, w: (typeof p.w === 'number' && p.w > 0) ? p.w : 1}))
+                               .filter(o => isFinite(o.v));
+        const wtot = vals.reduce((a, o) => a + o.w, 0);
         if (vals.length) {
-          const mv = vals.reduce((a, b) => a + b, 0) / vals.length;
+          const mv = vals.reduce((a, o) => a + o.v * o.w, 0) / wtot;
           const uInstRel = uInst;
-          const sd = vals.length > 1
-            ? Math.sqrt(vals.reduce((a, v) => a + (v - mv) * (v - mv), 0) / (vals.length - 1))
+          /* #RADEX-178: степеней свободы столько, сколько СТРОК (vals.length),
+             а не сколько измерений (wtot) — то же исправление и по той же
+             причине, что в drawMeanLine(); внутригрупповой разброс уплотнение
+             уничтожает, наблюдается только межстрочный. При w=1 у всех точек
+             формула тождественна прежней s/√n. */
+          const uStatRel = (vals.length > 1 && wtot > 0 && mv > 0)
+            ? Math.sqrt(vals.reduce((a, o) => a + (o.v - mv) * (o.v - mv) * o.w, 0)
+                        / ((vals.length - 1) * wtot)) / mv
             : 0;
-          const uStatRel = (vals.length > 1 && mv > 0) ? (sd / Math.sqrt(vals.length)) / mv : 0;
           const relTot = Math.sqrt(uStatRel * uStatRel + uInstRel * uInstRel);
           /* #RADEX-146: прямоугольник HTML-кнопки полноэкранного режима
              (#RADEX-137) в тех же координатах, что остальные avoidBox — CSS-
@@ -2150,7 +2186,7 @@ function multiRedraw() {
              #RADEX-133: результат (свой прямоугольник) сохраняется в
              meanBadgeBox — на узком canvas normativeBadge (рисуется чуть
              ниже, внутри multiDrawOverlays) уходит под него при столкновении. */
-          meanBadgeBox = drawMeanPlaque(multiCtx, mv, mv * relTot, relTot, vals.length,
+          meanBadgeBox = drawMeanPlaque(multiCtx, mv, mv * relTot, relTot, wtot,
             { width, rightMargin: PADR, topMargin: PADT }, C.mean, { avoidBox: fsBtnBox });
         }
       }

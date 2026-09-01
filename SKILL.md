@@ -2,9 +2,9 @@
 name: radex-esp32
 version: 0.4.0
 description: >-
-  Quarta-Rad / Radex по BLE (прил. RadexM): reverse протокола FE651Y00 + ESPHome-шлюз
-  radex_gateway_s3.yaml для ESP32-S3 → HA/narodmon. MR107ion радон, READ-poll (не Notify).
-  НЕ для AtomFast/RadonEye.
+  Quarta-Rad / Radex по BLE (прил. RadexM): reverse протокола FE651Y00 + две ветки шлюза для
+  ESP32 — ESPHome (firmware/*.yaml, HA/narodmon) и ESP-IDF (firmware-idf/, оценка по НРБ-99/2009).
+  MR107ion радон, READ-poll (не Notify). НЕ для AtomFast/RadonEye.
 ---
 
 # radex-esp32 — Quarta-Rad / Radex: BLE-протокол + ESP32-шлюз
@@ -14,6 +14,27 @@ Quarta-Rad / QuartaRad (Москва, [quartarad.com](https://quartarad.com), п
 **RadexM** [Android](https://play.google.com/store/apps/details?id=ru.quartarad.radexm)).
 Цель — интеграция приборов в ESP32-шлюзы (HA / Народмон) и собственный софт без штатного
 приложения. Прежнее имя `radex-ble` (переименован 2026-06-13).
+
+## Две ветки прошивки — где что искать
+
+В репозитории две независимые реализации шлюза; обе действующие. Ошибка «искать код
+ESP-IDF-ветки в `firmware/*.yaml`» обходится дороже всего, поэтому граница проведена явно.
+
+| | Ветка ESPHome | Ветка ESP-IDF |
+|---|---|---|
+| Каталог | `firmware/` (пять YAML) | `firmware-idf/` (C, ESP-IDF 6.1) |
+| Релизы | v0.1.0 – v0.5.0, ассет `firmware.factory.bin` | v1.0.0, ассеты `radex-gw-idf-*-factory.bin` (`0x0`) и `-app.bin` (`0x20000`) |
+| Платы | S3 (в т.ч. N16R8) и классическая ESP32-DevKitC | только ESP32-S3 N16R8: `sdkconfig.defaults` фиксирует `esp32s3`, 16 МБ флеша, octal PSRAM (PSRAM обязателен — 384 КБ под кольцевой лог) |
+| Сборка | `esphome compile <yaml>` | `docker run --rm -v "${PWD}/firmware-idf:/project" -w /project espressif/idf:v6.1 bash /project/build.sh`; на Windows — `build.ps1` |
+| Home Assistant | нативный протокол ESPHome | MQTT autodiscovery (`main/ha_mqtt.c`) |
+| Веб-интерфейс | ESPHome Web Server v3, Basic Auth | собственный, пять вкладок, аутентификации нет |
+| Своё сверх шлюза | — | история на флеш (раздел 2 МБ), оценка соответствия НРБ-99/2009 по рациональному критерию (`main/radon_stats.c`) |
+
+**HARD для ESP-IDF-ветки:** `CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n` в `sdkconfig.defaults`
+снимать нельзя — одновременно включённые наборы BLE 4.2 и 5.0 дают безвозвратную потерю
+связи после первого же разрыва (`INC-BLE50-001` в `KNOWN_ISSUES.md`). Проверка применения —
+по собранному образу (`BLE_INIT: … BLE_50:0`), не по строке в конфигурации. Прежний
+`sdkconfig` перекрывает `sdkconfig.defaults` — при смене цели или фичесета удалять.
 
 ## ⚠️ SAFETY-CORE (HARD — читать ДО касания прошивки/железа)
 
@@ -113,18 +134,34 @@ step1 sensor ОА радона / uptime / RSSI; step2 sliding-window (час 60�
 
 ```
 radex-esp32/
-├── SKILL.md · README.md · INSTALL.md · LICENSE (MIT)
-├── firmware/
+├── SKILL.md · README.md · INSTALL.md · KNOWN_ISSUES.md · LICENSE (MIT)
+├── firmware/                          ← ВЕТКА ESPHome
 │   ├── radex_gateway_s3_n16r8.yaml    ← рекомендуемая: S3 N16R8, автопоиск прибора (v0.4.0)
 │   ├── radex_gateway_s3.yaml          ← S3 4 МБ, MAC compile-time (Web UI v3, step3 Народмон ВЫКЛ)
 │   ├── radex_gateway_s3_baseline.yaml ← baseline S3 для smoke-теста
 │   ├── radex_gateway.yaml             ← старая классика ESP32-DevKitC (esp-idf, v0.3.0-step8)
 │   ├── radex_gateway_v2.yaml          ← альт. UX классики (Web Server v2, плоская таблица)
 │   ├── secrets.example.yaml · secrets.public.yaml · CHANGELOG.md · archive/
+├── firmware-idf/                      ← ВЕТКА ESP-IDF (v1.0.0), только ESP32-S3 N16R8
+│   ├── sdkconfig.defaults             ← чип, PSRAM, фичесет BLE (HARD: BLE_50=n), P20, разделы
+│   ├── partitions.csv                 ← ota_0 @0x20000, storage 2 МБ под историю
+│   ├── build.sh · build.ps1           ← сборка в Docker espressif/idf:v6.1, компактный отчёт об ошибках
+│   ├── main/
+│   │   ├── main.c                     ← порядок инициализации, привязка точки истории к опросу
+│   │   ├── ble_radex.c/.h             ← BLE-клиент, backoff, счётчик подряд неудачных open (порог 8 → esp_restart)
+│   │   ├── wifi_manager.c             ← STA, captive-портал RadexGW-Setup, полевой AP RadexGW-Outdoor, mDNS radex-gw
+│   │   ├── web_server.c               ← маршруты /api/* (data, history, assess, stats, log, export.csv, reboot)
+│   │   ├── radon_stats.c/.h           ← история на флеш, средние за периоды, рациональный критерий НРБ-99/2009
+│   │   ├── poll_cycle.c/.h            ← распознавание цикла пересчёта прибора (защита от дублей в среднем)
+│   │   ├── ha_mqtt.c · narodmon.c · net_time.c · log_ring.c · http_io_gate.c
+│   │   └── secrets_local.h.example    ← необязательная предзапись сети (в git не попадает)
+│   └── web/                           ← index.src.html + build_page.py → одностраничный интерфейс
 └── references/
     ├── mr107ion.md          ← полная reverse-таблица MR107ion (GATT, handles, byte map)
     ├── family-patterns.md   ← общие паттерны линейки (полное тело)
-    └── re-methodology.md    ← reverse-стратегия (полные шаги)
+    ├── re-methodology.md    ← reverse-стратегия (полные шаги)
+    ├── tsapalov-metodika-2025.md      ← методика рационального критерия (+ PDF первоисточника)
+    └── tsapalov-kranrod-2026.md       ← длительность измерения радона (+ PDF, CC BY)
 ```
 
 ## Reference-файлы
@@ -134,3 +171,6 @@ radex-esp32/
 | [`references/mr107ion.md`](references/mr107ion.md) | Полная reverse-таблица MR107ion (GATT, handles, byte map) |
 | [`references/family-patterns.md`](references/family-patterns.md) | Общие паттерны линейки (GATT-структура, READ-poll, bonding, battery) |
 | [`references/re-methodology.md`](references/re-methodology.md) | Reverse-стратегия (btsnoop capture, ble-explorer, косвенные источники) |
+| [`references/tsapalov-metodika-2025.md`](references/tsapalov-metodika-2025.md) | Методика рационального критерия оценки соответствия (АНРИ, 2025, №1(120), с. 76–95); реализована в `firmware-idf/main/radon_stats.c` |
+| [`references/tsapalov-kranrod-2026.md`](references/tsapalov-kranrod-2026.md) | Длительность измерения радона (Atmosphere, 2026, CC BY) |
+| [`KNOWN_ISSUES.md`](KNOWN_ISSUES.md) | Матрица совместимости плат и журнал инцидентов, включая `INC-BLE50-001` |

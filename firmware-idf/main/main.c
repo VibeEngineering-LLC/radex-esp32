@@ -14,6 +14,7 @@
 #include "radon_stats.h"
 #include "net_time.h"    /* #RADEX-113: net_time_mark_sntp() */
 #include "poll_cycle.h"
+#include "http_io_gate.h"   /* #RADEX-171 */
 
 #include <esp_log.h>
 #include <esp_netif_sntp.h>
@@ -154,6 +155,33 @@ static void log_reset_reason(void)
                   "12=SW_CPU, 14=RTC_SW_CPU, 15=RTCWDT_RTC_RESET)", (int) r);
 }
 
+#ifdef RADEX172_STRESS_WRITER
+/* #SA-3: вторая ПИШУЩАЯ ЗАДАЧА. Штатный писатель — колбэк BLE — пишет примерно
+   раз в час, за три минуты прогона он не столкнётся с читателем ни разу, и
+   стенд остаётся зелёным даже со снятым мьютексом (проверено 01.09: мутация
+   NO_LOCK дала PASS). Причина: /api/compact исполняется ТОЙ ЖЕ задачей httpd,
+   что и читатели, — сервер сериализует их сам, мимо мьютекса. Настоящую гонку
+   создаёт только отдельная задача.
+
+   ⚠ Стенд пишет в ОТДЕЛЬНЫЙ файл (radon_stats.c переводит `filename` на
+   stress.csv), но 01.09.2026 этого оказалось НЕ достаточно: уплотнение
+   игнорировало `filename` и держало путь зашитым, поэтому «безопасный»
+   /api/compact во время прогона пересобрал НАСТОЯЩУЮ историю оператора
+   (см. #RADEX-173 в radon_stats.c). Дефект исправлен, но урок записан здесь:
+   прежде чем считать стенд изолированным, убедиться ГРЕПОМ, что каждый путь
+   к файлу в модуле спрашивает `filename`, а не повторяет строку. */
+static void radex172_stress_task(void *arg)
+{
+    (void)arg;
+    unsigned i = 0;
+    while (1) {
+        radon_stats_add(time(NULL), 100.0f + (i % 50), 110.0f, 25.0f, 50.0f);
+        i++;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+#endif
+
 void app_main(void)
 {
     esp_err_t ret = nvs_flash_init();
@@ -190,11 +218,22 @@ void app_main(void)
     // httpd_server_init: error in listen (112), лог
     // logs/hci/radex_gw_idf_first_boot_20260827.log).
     if (wifi_manager_mode() != NET_MODE_SETUP) {
+        /* #RADEX-171: семафор тяжёлой полосы — ДО регистрации обработчиков.
+           У http_io_gate есть и ленивое создание, но оно само гонка: два
+           первых запроса вошли бы в него одновременно. */
+        http_io_gate_init();
         web_server_init();
     } else {
         ESP_LOGW(TAG, "режим первичной настройки: показания по HTTP недоступны, "
                       "подключитесь к точке RadexGW-Setup и задайте сеть");
     }
+
+#ifdef RADEX172_STRESS_WRITER
+    /* Ядро 0: у httpd закреплено ядро 1 (cfg.core_id), нужна ДРУГАЯ задача на
+       другом ядре — иначе снова получим сериализацию вместо гонки. */
+    xTaskCreatePinnedToCore(radex172_stress_task, "rs172", 4096, NULL, 4, NULL, 0);
+    ESP_LOGW(TAG, "#SA-3: ВКЛЮЧЕН стресс-писатель, файл /data/stress.csv");
+#endif
 
     ha_mqtt_start();
     // Народмон: читает свои настройки, но отправку НЕ включает — она выключена

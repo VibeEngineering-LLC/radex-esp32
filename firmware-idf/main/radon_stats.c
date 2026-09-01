@@ -20,9 +20,19 @@
 #include <dirent.h>      /* #RADEX-102: обход /data за файлами замеров */
 #include "radon_stats.h"
 
+void radon_stats_bump_generation(void);   /* #RADEX-172, тело ниже */
 static const char *TAG = "radon_stats";
 static bool mounted = false;
+#ifdef RADEX172_STRESS_WRITER
+/* #SA-3, мутационный стенд. Только для ручных сборок: модуль переводится на
+   ОТДЕЛЬНЫЙ файл, чтобы нагрузочный прогон со второй пишущей задачей не трогал
+   метрологическую историю оператора (71 точка замера радона по методике
+   Цапалова — портить её ради проверки нельзя). Топология гонки при этом та же:
+   одна задача пишет, задача httpd читает тот же файл. */
+static const char *filename = "/data/stress.csv";
+#else
 static const char *filename = "/data/radon.csv";
+#endif
 
 // Таблицы из методики Цапалова
 static const struct {
@@ -58,6 +68,15 @@ static bool is_valid_time(time_t ts) {
 
 // Инициализация файловой системы и создание заголовка файла
 bool radon_stats_init(void) {
+    /* #RADEX-172: мьютекс создаём ПЕРВЫМ делом — до монтирования и независимо
+       от его исхода. Ленивое создание «при первом обращении» само было бы
+       гонкой: две задачи вошли бы в него одновременно и получили два разных
+       мьютекса. Вызов radon_stats_init() стоит в app_main ДО web_server_init()
+       и ble_radex_start(), то есть до появления вторых читателей/писателей. */
+    if (!radon_stats_mutex_create()) {
+        ESP_LOGE(TAG, "#RADEX-172: не создан мьютекс истории — работа без защиты от гонки");
+    }
+
     esp_vfs_spiffs_conf_t conf = {
         .base_path = "/data",
         .partition_label = "storage",
@@ -72,6 +91,13 @@ bool radon_stats_init(void) {
     }
 
     mounted = true;
+
+#ifdef RADEX172_STRESS_CLEANUP
+    /* ВРЕМЕННО: разовая уборка файлов мутационного стенда #SA-3. */
+    remove("/data/stress.csv");
+    remove("/data/stress2.csv");
+    ESP_LOGW(TAG, "#SA-3: файлы стенда удалены");
+#endif
 
     // Проверяем существование файла
     FILE *f = fopen(filename, "r");
@@ -92,7 +118,25 @@ bool radon_stats_init(void) {
 }
 
 // Добавление записи в файл
-void radon_stats_add(time_t ts, float radon, float radon_avg, float temp, float hum) {
+/* #RADEX-172: прототипы внутренних (под мьютексом) реализаций.
+   Сгенерированы scripts/radex172_rename_locked.py, руками не править. */
+static void radon_stats_add_locked(time_t ts, float radon, float radon_avg, float temp, float hum);
+static int radon_stats_rebase_locked(time_t now);
+static bool radon_stats_period_locked(uint32_t seconds_back, radon_period_t *out);
+static void radon_stats_assess_range_locked(time_t from, time_t to,
+                              float c_rl, float u_d, bool restricted,
+                              radon_assess_t *out);
+static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d, bool restricted);
+static bool radon_stats_start_test_locked(void);
+static bool radon_stats_reset_locked(void);
+static time_t radon_stats_test_start_locked(void);
+static time_t radon_stats_test_start_eff_locked(void);
+static int radon_stats_tests_list_json_locked(char *buf, size_t len);
+static int radon_stats_test_points_json_locked(time_t start, char *buf, size_t len);
+static float radon_stats_last_radon_locked(void);
+static int radon_stats_compact_locked(uint32_t raw_days, uint32_t hour_days);
+
+static void radon_stats_add_locked(time_t ts, float radon, float radon_avg, float temp, float hum) {
     if (!mounted) return;
     /* #RADEX-113: пока часы не синхронизированы, запись НЕ отбрасывается, а
        получает относительную метку — отрицательные секунды от включения платы.
@@ -143,6 +187,7 @@ void radon_stats_add(time_t ts, float radon, float radon_avg, float temp, float 
         // Заменяем оригинальный файл
         remove(filename);
         rename(temp_filename, filename);
+        radon_stats_bump_generation();   /* #RADEX-172: файл пересобран */
 
         ESP_LOGI(TAG, "Прорежено, осталось %d строк", count / 2 + 1);
     }
@@ -184,7 +229,7 @@ void radon_stats_add(time_t ts, float radon, float radon_avg, float temp, float 
    Файл переписывается через временный: правка на месте оборвалась бы при потере
    питания посреди прохода и оставила бы половину истории в старой шкале, а
    половину в новой — различить их потом было бы нечем. */
-int radon_stats_rebase(time_t now) {
+static int radon_stats_rebase_locked(time_t now) {
     if (!mounted || !is_valid_time(now)) return -1;
 
     FILE *in = fopen(filename, "r");
@@ -222,12 +267,13 @@ int radon_stats_rebase(time_t now) {
     if (converted == 0) { remove(tmpname); return 0; }
     remove(filename);
     rename(tmpname, filename);
+    radon_stats_bump_generation();   /* #RADEX-172: файл пересобран */
     ESP_LOGI(TAG, "#RADEX-113: переведено записей в реальное время: %d", converted);
     return converted;
 }
 
 // Подсчет среднего за период
-bool radon_stats_period(uint32_t seconds_back, radon_period_t *out) {
+static bool radon_stats_period_locked(uint32_t seconds_back, radon_period_t *out) {
     if (!mounted) return false;
 
     FILE *f = fopen(filename, "r");
@@ -349,7 +395,7 @@ static void find_uv_kp(int days, bool restricted, float *uv, float *kp) {
    поведение), либо по ВЫБРАННОМУ интервалу истории — оператор: «рациональный
    метод должен запускаться как прямым измерением, так и чтением данных из
    истории или сохранений». Границы нулевые означают «без ограничения». */
-void radon_stats_assess_range(time_t from, time_t to,
+static void radon_stats_assess_range_locked(time_t from, time_t to,
                               float c_rl, float u_d, bool restricted,
                               radon_assess_t *out) {
     /* Структура обнуляется ПЕРВЫМ делом, а входные условия проставляются сразу:
@@ -496,7 +542,7 @@ void radon_stats_assess_range(time_t from, time_t to,
 }
 
 // Формирование JSON-ответа
-int radon_stats_json(char *buf, size_t len, float c_rl, float u_d, bool restricted) {
+static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d, bool restricted) {
     if (!mounted) {
         /* #RADEX-91: u_d_eff здесь равен НЕклампнутому u_d — до этой точки
            никакая оценка не считалась, поэтому "фактически применённого"
@@ -643,7 +689,7 @@ int radon_stats_json(char *buf, size_t len, float c_rl, float u_d, bool restrict
 // целиком, не пересобирая содержимое.
 const char *radon_stats_file(void) { return filename; }
 
-bool radon_stats_start_test(void) {
+static bool radon_stats_start_test_locked(void) {
     time_t now = time(NULL);
     if (!is_valid_time(now)) {
         ESP_LOGE(TAG, "Cannot start test: system time is not synchronized");
@@ -694,7 +740,7 @@ bool radon_stats_start_test(void) {
     return true;
 }
 
-bool radon_stats_reset(void) {
+static bool radon_stats_reset_locked(void) {
     /* #RADEX-102, оператор: "каждый новый замер должен создавать отдельный
        файл на флеш". Раньше "Сброс" удалял ОБЩИЙ /data/radon.csv целиком -
        вместе с текущим замером стиралась и вся история для "Показаний" и
@@ -711,6 +757,7 @@ bool radon_stats_reset(void) {
     if (start > 0) {
         char tf[48];
         radon_stats_test_file(start, tf, sizeof(tf));
+        radon_stats_bump_generation();   /* #RADEX-172: файл замера исчезает */
         if (tf[0] && remove(tf) != 0) {
             /* Файла может не быть, если start_test() не смог его создать
                (см. её собственный ESP_LOGW) - это не повод отказывать в
@@ -746,7 +793,7 @@ bool radon_stats_reset(void) {
     return true;
 }
 
-time_t radon_stats_test_start(void) {
+static time_t radon_stats_test_start_locked(void) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open("radon", NVS_READONLY, &handle);
     if (err != ESP_OK) {
@@ -780,7 +827,7 @@ time_t radon_stats_test_start(void) {
 /* #RADEX-150: обоснование — в radon_stats.h. Механика: явная отметка сильнее,
    иначе первая ВАЛИДНАЯ по времени запись истории (относительные метки до
    синхронизации часов, #RADEX-113, пропускаем — датировать замер нечем). */
-time_t radon_stats_test_start_eff(void)
+static time_t radon_stats_test_start_eff_locked(void)
 {
     time_t s = radon_stats_test_start();
     if (s > 0) return s;
@@ -814,7 +861,7 @@ void radon_stats_test_file(time_t start, char *out, size_t out_sz)
    не по NVS: список остаётся верным, даже если метка активного замера уже
    снята «Сбросом» (тот удаляет файл вместе с меткой, но архивные файлы
    прошлых замеров NVS не касаются вовсе). */
-int radon_stats_tests_list_json(char *buf, size_t len) {
+static int radon_stats_tests_list_json_locked(char *buf, size_t len) {
     if (!buf || len == 0) return -1;
     if (!mounted) {
         int n = snprintf(buf, len, "[]");
@@ -892,7 +939,7 @@ int radon_stats_tests_list_json(char *buf, size_t len) {
    /api/history/range (main/web_server.c, handle_history_range), чтобы
    страница переиспользовала уже написанный парсер точек. Источник — файл
    замера (radon_stats_test_file), не общий /data/radon.csv. */
-int radon_stats_test_points_json(time_t start, char *buf, size_t len) {
+static int radon_stats_test_points_json_locked(time_t start, char *buf, size_t len) {
     if (!buf || len == 0) return -1;
     char tf[48];
     radon_stats_test_file(start, tf, sizeof(tf));
@@ -969,7 +1016,7 @@ int radon_stats_test_points_json(time_t start, char *buf, size_t len) {
    перезагрузку не переживает; на живых данных 29.08 это дало шесть дублей
    одного значения за час перепрошивок. Читаем хвост файла, а не весь файл:
    он до 2 МБ. */
-float radon_stats_last_radon(void)
+static float radon_stats_last_radon_locked(void)
 {
     if (!mounted) return NAN;
     FILE *f = fopen(filename, "r");
@@ -1009,14 +1056,24 @@ static void write_group(FILE *fout, long long grp_key, long long grp_from, long 
     fprintf(fout, "%lld,%.2f,%.2f,%.1f,%.0f,%u\n", ts, radon, radon_avg, temp, hum, sum_n);
 }
 
-int radon_stats_compact(uint32_t raw_days, uint32_t hour_days) {
+static int radon_stats_compact_locked(uint32_t raw_days, uint32_t hour_days) {
     // По умолчанию: 30 суток — как есть, 365 — среднечасовые
     /* Ноль здесь означает «не хранить сырых суток вовсе», а не «взять умолчание»:
        подмена нуля делала невозможной свёртку всей истории — и проверку функции
        на коротком ряду тоже. Умолчания (30 и 365) задаёт вызывающий обработчик. */
     if (hour_days < raw_days) hour_days = raw_days;
 
-    const char *fname_in = "/data/radon.csv";
+    /* #RADEX-173 (найдено 01.09.2026 ценой реальных данных). Здесь стоял
+       ЗАШИТЫЙ "/data/radon.csv" вместо filename — единственное место в модуле,
+       которое не спрашивало, с каким файлом он работает. В обычной сборке пути
+       совпадают, поэтому дефект не проявлялся никогда. Проявился, когда модуль
+       перевели на отдельный файл для нагрузочного стенда: все чтения шли в
+       stress.csv, а уплотнение молча пересобрало НАСТОЯЩУЮ историю оператора —
+       71 сырая запись свернулась в 5 суточных средних. Сырьё уцелело только
+       потому, что было выгружено заранее.
+       Урок класса: у модуля должен быть ОДИН источник имени файла. Любая
+       вторая копия пути — это место, где он однажды разойдётся. */
+    const char *fname_in = filename;
     const char *fname_out = "/data/radon_c.csv";
 
     FILE *fin = fopen(fname_in, "r");
@@ -1145,8 +1202,10 @@ int radon_stats_compact(uint32_t raw_days, uint32_t hour_days) {
     remove(fname_in);
     if (rename(fname_out, fname_in) != 0) {
         ESP_LOGE(TAG, "Ошибка переименования файла");
+        radon_stats_bump_generation();   /* #RADEX-172: файла на месте уже нет */
         return -1;
     }
+    radon_stats_bump_generation();       /* #RADEX-172: файл пересобран */
 
     ESP_LOGI(TAG, "Уплотнение завершено: было %lld строк, стало %lld", total_in, total_out);
     return (int)total_out;
@@ -1173,4 +1232,211 @@ int radon_stats_assess_json(char *buf, size_t len, time_t from, time_t to,
         v, a.c, a.uv, a.kp, a.crit1, a.crit2, (unsigned)a.days, a.c_rl, u_d,
         a.u_d_eff > 0 ? a.u_d_eff : u_d,
         restricted ? "true" : "false", (long long)from, (long long)to);
+}
+
+/* #RADEX-172: Рекурсивный мьютекс модуля + обёртки над публичными функциями */
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+static SemaphoreHandle_t s_mtx = NULL;
+static uint32_t s_lock_timeouts = 0;
+
+bool radon_stats_mutex_create(void)
+{
+    if (s_mtx) {
+        return true;
+    }
+    s_mtx = xSemaphoreCreateRecursiveMutex();
+    return s_mtx != NULL;
+}
+
+bool radon_stats_lock(uint32_t timeout_ms)
+{
+#ifdef RADEX172_MUTATION_NO_LOCK
+    /* #SA-3, МУТАЦИЯ. Не включать в рабочей сборке. Собирается только вручную
+       (idf.py -DRADEX172_MUTATION_NO_LOCK=1) и служит одному: показать, что
+       нагрузочный стенд scripts/radex172_load_test.py УМЕЕТ КРАСНЕТЬ на своём
+       классе дефекта. Мьютекс превращается в пустышку, всё остальное в коде
+       остаётся тем же — значит покраснение объясняется снятой блокировкой, а
+       не побочной правкой. Зелёный стенд при этой мутации означал бы, что
+       стенд не проверяет то, ради чего написан. */
+    (void)timeout_ms;
+    return true;
+#else
+    if (!s_mtx) {
+        return false;
+    }
+    if (xSemaphoreTakeRecursive(s_mtx, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+        return true;
+    }
+    s_lock_timeouts++;
+    ESP_LOGE(TAG, "radon_stats_lock timeout %u ms", timeout_ms);
+    return false;
+#endif
+}
+
+void radon_stats_unlock(void)
+{
+#ifndef RADEX172_MUTATION_NO_LOCK   /* см. мутацию в radon_stats_lock */
+    if (s_mtx) {
+        xSemaphoreGiveRecursive(s_mtx);
+    }
+#endif
+}
+
+uint32_t radon_stats_lock_timeouts(void)
+{
+    return s_lock_timeouts;
+}
+
+/* #RADEX-172: поколение файла. Увеличивается ТОЛЬКО там, где файл
+   пересобирается целиком (см. пояснение в radon_stats.h). Обычная дозапись
+   поколение не меняет — она читателю не мешает. */
+static uint32_t s_generation;
+
+uint32_t radon_stats_generation(void)
+{
+    return s_generation;
+}
+
+void radon_stats_bump_generation(void)
+{
+    s_generation++;
+}
+
+#define RS_LOCK_MS_WRITE 10000
+#define RS_LOCK_MS_READ   5000
+
+void radon_stats_add(time_t ts, float radon, float radon_avg, float temp, float hum)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_WRITE)) {
+        return;
+    }
+    radon_stats_add_locked(ts, radon, radon_avg, temp, hum);
+    radon_stats_unlock();
+}
+
+int radon_stats_rebase(time_t now)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return -1;
+    }
+    int result = radon_stats_rebase_locked(now);
+    radon_stats_unlock();
+    return result;
+}
+
+bool radon_stats_period(uint32_t seconds_back, radon_period_t *out)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        if (out) {
+            memset(out, 0, sizeof(*out));
+        }
+        return false;
+    }
+    bool result = radon_stats_period_locked(seconds_back, out);
+    radon_stats_unlock();
+    return result;
+}
+
+void radon_stats_assess_range(time_t from, time_t to, float c_rl, float u_d, bool restricted, radon_assess_t *out)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        if (out) {
+            memset(out, 0, sizeof(*out));
+        }
+        return;
+    }
+    radon_stats_assess_range_locked(from, to, c_rl, u_d, restricted, out);
+    radon_stats_unlock();
+}
+
+int radon_stats_json(char *buf, size_t len, float c_rl, float u_d, bool restricted)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return -1;
+    }
+    int result = radon_stats_json_locked(buf, len, c_rl, u_d, restricted);
+    radon_stats_unlock();
+    return result;
+}
+
+bool radon_stats_start_test(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return false;
+    }
+    bool result = radon_stats_start_test_locked();
+    radon_stats_unlock();
+    return result;
+}
+
+bool radon_stats_reset(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return false;
+    }
+    bool result = radon_stats_reset_locked();
+    radon_stats_unlock();
+    return result;
+}
+
+time_t radon_stats_test_start(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return 0;
+    }
+    time_t result = radon_stats_test_start_locked();
+    radon_stats_unlock();
+    return result;
+}
+
+time_t radon_stats_test_start_eff(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return 0;
+    }
+    time_t result = radon_stats_test_start_eff_locked();
+    radon_stats_unlock();
+    return result;
+}
+
+int radon_stats_tests_list_json(char *buf, size_t len)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return -1;
+    }
+    int result = radon_stats_tests_list_json_locked(buf, len);
+    radon_stats_unlock();
+    return result;
+}
+
+int radon_stats_test_points_json(time_t start, char *buf, size_t len)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return -1;
+    }
+    int result = radon_stats_test_points_json_locked(start, buf, len);
+    radon_stats_unlock();
+    return result;
+}
+
+float radon_stats_last_radon(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return NAN;
+    }
+    float result = radon_stats_last_radon_locked();
+    radon_stats_unlock();
+    return result;
+}
+
+int radon_stats_compact(uint32_t raw_days, uint32_t hour_days)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return -1;
+    }
+    int result = radon_stats_compact_locked(raw_days, hour_days);
+    radon_stats_unlock();
+    return result;
 }

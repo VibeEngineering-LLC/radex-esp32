@@ -5,3 +5,6 @@ sdkconfig.old
 # Реальные WiFi-креды — см. main/secrets_local.h.example
 main/secrets_local.h
 *.log
+# Реестр известных секретов для scripts/check_binary_secrets.py.
+# Составляется на машине сборщика и НЕ публикуется.
+scripts/secrets_known.txt

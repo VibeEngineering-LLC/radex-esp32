@@ -23,9 +23,22 @@
 #include <nvs.h>
 
 // Своя сеть — чтобы после каждой перепрошивки не проходить captive-портал
-// заново. Файла нет → блок отключается, остаётся штатная настройка порталом.
-#if __has_include("secrets_local.h")
+// заново. Режим ЛОКАЛЬНЫЙ и включается ТОЛЬКО явно: `.\build.ps1 -LocalWifi`
+// (переменная RADEX_GW_LOCAL_WIFI=1). Дефолт сборки — без сетевых данных.
+//
+// Раньше условием было одно лишь `__has_include`. Файл secrets_local.h лежит
+// у разработчика всегда, поэтому «обычная» сборка молча уносила в бинарник
+// реальные SSID и пароль его сети — и такие образы ушли в релиз v1.0.0.
+// Наличие файла на диске не выражает намерения его опубликовать; намерение
+// выражается только явным флагом. Настройка сети принадлежит владельцу платы
+// и вносится порталом RadexGW-Setup либо через Web UI.
+#if defined(RADEX_GW_LOCAL_WIFI) && __has_include("secrets_local.h")
 #  include "secrets_local.h"
+// Маркер в .rodata: делает локальный образ узнаваемым сам по себе, без списка
+// секретов, — проверяющему не нужно знать, какая именно сеть вшита.
+__attribute__((used))
+static const char radex_gw_local_build_marker[] =
+    "RADEX-GW-LOCAL-BUILD-DO-NOT-PUBLISH";
 #endif
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -72,6 +85,10 @@ static void on_measurement(uint16_t handle, float value)
 static void wifi_provision_if_empty(void)
 {
 #if defined(RADEX_GW_WIFI_SSID)
+    // Маркер печатается ЖИВЫМ кодом намеренно: __attribute__((used)) запрещает
+    // выбросить символ компилятору, но не линковщику (--gc-sections). Проверено
+    // 02.09.2026 — без этой строки маркера в образе не оказалось.
+    ESP_LOGW(TAG, "%s", radex_gw_local_build_marker);
     nvs_handle_t h;
     if (nvs_open("wifi", NVS_READWRITE, &h) != ESP_OK) return;
     size_t len = 0;

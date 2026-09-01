@@ -12,7 +12,20 @@ cd /project
 # Смена цели требует удалить sdkconfig — он привязан к чипу (см. sdkconfig.s3.bak).
 TARGET="${RADEX_TARGET:-esp32s3}"
 if [ ! -f sdkconfig ]; then idf.py set-target "$TARGET" >> "$LOG" 2>&1; fi
-if idf.py build >> "$LOG" 2>&1; then
+# Локальный режим (W-063): по умолчанию ВЫКЛЮЧЕН, то есть сетевые данные
+# в образ не попадают. Значение передаётся в CMake ЯВНО при каждой сборке —
+# ноль тоже: иначе единица осталась бы в кэше CMakeCache.txt и следующая
+# «обычная» сборка молча собралась бы с кредами.
+LOCAL_WIFI="${RADEX_GW_LOCAL_WIFI:-0}"
+rm -f /project/build/LOCAL_BUILD_DO_NOT_PUBLISH
+if [ "$LOCAL_WIFI" != "0" ]; then
+  echo "ВНИМАНИЕ: локальная сборка с сетевыми данными — ПУБЛИКАЦИИ НЕ ПОДЛЕЖИТ"
+fi
+if idf.py -DRADEX_GW_LOCAL_WIFI="$LOCAL_WIFI" build >> "$LOG" 2>&1; then
+  if [ "$LOCAL_WIFI" != "0" ]; then
+    echo "локальная сборка: в образе реальная сеть, публиковать нельзя" \
+      > /project/build/LOCAL_BUILD_DO_NOT_PUBLISH
+  fi
   echo "BUILD_OK"
   grep -E "Project build complete|Successfully created|radex-idf.bin binary size" "$LOG" | tail -3
   exit 0

@@ -23,16 +23,99 @@
 void radon_stats_bump_generation(void);   /* #RADEX-172, тело ниже */
 static const char *TAG = "radon_stats";
 static bool mounted = false;
-#ifdef RADEX172_STRESS_WRITER
-/* #SA-3, мутационный стенд. Только для ручных сборок: модуль переводится на
-   ОТДЕЛЬНЫЙ файл, чтобы нагрузочный прогон со второй пишущей задачей не трогал
-   метрологическую историю оператора (71 точка замера радона по методике
-   Цапалова — портить её ради проверки нельзя). Топология гонки при этом та же:
-   одна задача пишет, задача httpd читает тот же файл. */
-static const char *filename = "/data/stress.csv";
-#else
+/* Единственный источник имени файла истории в модуле. Переключателя сборки
+   здесь больше нет: мутационный стенд #RADEX-172 переводил его на stress.csv,
+   и ровно на этом 01.09.2026 сгорела история оператора — уплотнение держало
+   путь зашитым и не спрашивало эту переменную (#RADEX-173). Отладочный
+   переключатель в публикуемой прошивке не нужен, а цена его существования уже
+   измерена. */
 static const char *filename = "/data/radon.csv";
-#endif
+
+// до 01.09.2026 заголовок обещал пять колонок, а уплотнение
+// дописывало шестую (вес — число исходных измерений в строке) только строкам с весом
+// больше единицы; файл выгружают и открывают в Excel, где безымянная шестая колонка
+// молча съезжает, а часть строк её не имеет вовсе. Поэтому колонок всегда шесть — и в
+// заголовке, и в каждой строке, которую пишет прошивка. Строки старого формата (пять
+// колонок) читаются по-прежнему, их вес принимается равным единице.
+#define RADON_CSV_HEADER "time,radon,radon_avg,temp,hum,n\n"
+
+static void radon_csv_write_row(FILE *f, long long ts, float radon, float radon_avg,
+    float temp, float hum, unsigned w)
+{
+    fprintf(f, "%lld,%.2f,%.2f,%.1f,%.0f,%u\n", ts, radon, radon_avg, temp, hum, w);
+}
+
+static inline bool hum_valid(float h)
+{
+    return !isnan(h) && 0.0f <= h && h <= 100.0f;
+}
+
+static inline bool temp_valid(float t)
+{
+    return !isnan(t) && -60.0f <= t && t <= 90.0f;
+}
+
+// файл переписывается целиком, потому что заголовок канонический на две колонки длиннее
+// старого и правка на месте сдвинула бы все данные; операция разовая — со второй
+// загрузки strcmp совпадает и функция выходит сразу; полная перезапись файла в этом
+// модуле не новость (тем же способом работает radon_stats_rebase_locked). Вызывается
+// из radon_stats_init после монтирования, когда других задач ещё нет, поэтому мьютекс
+// не берётся.
+static void radon_stats_migrate_header(void)
+{
+    if (!mounted) return;
+
+    FILE *f_in = fopen(filename, "r");
+    if (!f_in) return;
+
+    char line[128];
+    if (!fgets(line, sizeof(line), f_in)) {
+        fclose(f_in);
+        return;
+    }
+
+    if (strcmp(line, RADON_CSV_HEADER) == 0) {
+        fclose(f_in);
+        return;
+    }
+
+    FILE *f_out = fopen("/data/radon_hdr.csv", "w");
+    if (!f_out) {
+        fclose(f_in);
+        return;
+    }
+
+    fputs(RADON_CSV_HEADER, f_out);
+
+    radon_row_t row;
+    int count = 0;
+
+    // если первая строка — данные, то записываем её
+    if (radon_csv_parse(line, &row)) {
+        radon_csv_write_row(f_out, row.ts, row.radon, row.radon_avg,
+            row.temp, row.hum, row.w);
+        count++;
+    }
+
+    while (fgets(line, sizeof(line), f_in)) {
+        if (radon_csv_parse(line, &row)) {
+            radon_csv_write_row(f_out, row.ts, row.radon, row.radon_avg,
+                row.temp, row.hum, row.w);
+            count++;
+        }
+        // неразобранные строки пропускаются
+    }
+
+    fclose(f_in);
+    fclose(f_out);
+
+    remove(filename);
+    rename("/data/radon_hdr.csv", filename);
+
+    radon_stats_bump_generation();
+
+    ESP_LOGW(TAG, "#RADEX-175: файл истории приведён к шестиколоночному формату (%d строк)", count);
+}
 
 // Таблицы из методики Цапалова
 static const struct {
@@ -92,26 +175,23 @@ bool radon_stats_init(void) {
 
     mounted = true;
 
-#ifdef RADEX172_STRESS_CLEANUP
-    /* ВРЕМЕННО: разовая уборка файлов мутационного стенда #SA-3. */
-    remove("/data/stress.csv");
-    remove("/data/stress2.csv");
-    ESP_LOGW(TAG, "#SA-3: файлы стенда удалены");
-#endif
-
     // Проверяем существование файла
     FILE *f = fopen(filename, "r");
     if (!f) {
         // Создаем файл с заголовком
         f = fopen(filename, "w");
         if (f) {
-            fprintf(f, "time,radon,radon_avg,temp,hum\n");
+            fputs(RADON_CSV_HEADER, f);
             fclose(f);
         } else {
             ESP_LOGW(TAG, "Не удалось создать файл %s", filename);
         }
     } else {
         fclose(f);
+        /* #RADEX-175: файл достался от прежней прошивки — привести к
+           каноническому заголовку. Разово: со второй загрузки функция выходит
+           на первом же strcmp, работы не делает. */
+        radon_stats_migrate_header();
     }
 
     return true;
@@ -173,12 +253,38 @@ static void radon_stats_add_locked(time_t ts, float radon, float radon_avg, floa
             fputs(line, f_out);
         }
 
+    // прореживание выбрасывает каждую вторую строку, но не смеет выбрасывать
+    // вместе с ней число измерений. Вес отброшенной строки переносится на следующую
+    // сохранённую — та начинает представлять оба интервала, сумма весов (а значит и «сколько
+    // измерений») сохраняется, и среднее остаётся взвешенным по реальному числу измерений,
+    // а не по числу уцелевших строк. Без переноса каждое прореживание вдвое занижало бы и
+    // storage.points, и вес старых данных в среднем — тихо и необратимо.
         int count = 0;
+        uint32_t carry = 0;
+        radon_row_t pending = {0};
+        bool has_pending = false;
+
         while (fgets(line, sizeof(line), f_in)) {
+            radon_row_t row;
+            if (!radon_csv_parse(line, &row)) {
+                continue;
+            }
+
             if (count % 2 == 0) {
-                fputs(line, f_out);
+                radon_csv_write_row(f_out, row.ts, row.radon, row.radon_avg,
+                    row.temp, row.hum, row.w + carry);
+                carry = 0;
+            } else {
+                carry += row.w;
+                pending = row;
+                has_pending = true;
             }
             count++;
+        }
+
+        if (carry > 0 && has_pending) {
+            radon_csv_write_row(f_out, pending.ts, pending.radon, pending.radon_avg,
+                pending.temp, pending.hum, carry);
         }
 
         fclose(f_in);
@@ -194,7 +300,10 @@ static void radon_stats_add_locked(time_t ts, float radon, float radon_avg, floa
 
     FILE *f = fopen(filename, "a");
     if (f) {
-        fprintf(f, "%lld,%.2f,%.2f,%.1f,%.0f\n", (long long)ts, radon, radon_avg, temp, hum);
+        /* Сырая запись — одно измерение, вес 1. Колонку пишем ВСЕГДА (#RADEX-175):
+           «шестого поля нет, значит вес единица» — знание, которого нет в самом
+           файле, а формат обязан быть самоописательным. */
+        radon_csv_write_row(f, (long long)ts, radon, radon_avg, temp, hum, 1);
         fclose(f);
     }
 
@@ -212,8 +321,7 @@ static void radon_stats_add_locked(time_t ts, float radon, float radon_avg, floa
         if (tf[0]) {
             FILE *tf_f = fopen(tf, "a");
             if (tf_f) {
-                fprintf(tf_f, "%lld,%.2f,%.2f,%.1f,%.0f\n",
-                        (long long)ts, radon, radon_avg, temp, hum);
+                radon_csv_write_row(tf_f, (long long)ts, radon, radon_avg, temp, hum, 1);
                 fclose(tf_f);
             }
         }
@@ -244,18 +352,12 @@ static int radon_stats_rebase_locked(time_t now) {
 
     if (fgets(line, sizeof(line), in)) fputs(line, out);   /* заголовок */
     while (fgets(line, sizeof(line), in)) {
-        long long ts_raw;
-        float r, ra, t, h;
-        unsigned w = 1;
-        int got = sscanf(line, "%lld,%f,%f,%f,%f,%u", &ts_raw, &r, &ra, &t, &h, &w);
-        if (got >= 5 && ts_raw < 0) {
-            int64_t age = up_now - (-ts_raw);      /* сколько секунд назад записали */
+        radon_row_t row;
+        if (radon_csv_parse(line, &row) && row.ts < 0) {
+            int64_t age = up_now - (-(int64_t)row.ts);   /* сколько секунд назад записали */
             long long real = (long long)now - (age > 0 ? age : 0);
-            if (got >= 6 && w > 1) {
-                fprintf(out, "%lld,%.2f,%.2f,%.1f,%.0f,%u\n", real, r, ra, t, h, w);
-            } else {
-                fprintf(out, "%lld,%.2f,%.2f,%.1f,%.0f\n", real, r, ra, t, h);
-            }
+            radon_csv_write_row(out, real, row.radon, row.radon_avg,
+                                row.temp, row.hum, (unsigned)row.w);
             converted++;
         } else {
             fputs(line, out);
@@ -283,7 +385,8 @@ static bool radon_stats_period_locked(uint32_t seconds_back, radon_period_t *out
     time_t now = time(NULL);
     time_t start_time = now - seconds_back;
     float sum = 0.0f;
-    uint32_t points = 0;
+    uint32_t points = 0;   /* ИЗМЕРЕНИЙ (сумма весов) — для среднего */
+    uint32_t rows = 0;     /* СТРОК файла — только для оценки шага, см. ниже */
     time_t min_ts = 0;
     time_t max_ts = 0;
 
@@ -294,20 +397,15 @@ static bool radon_stats_period_locked(uint32_t seconds_back, radon_period_t *out
     }
 
     while (fgets(line, sizeof(line), f)) {
-        time_t ts;
-        float radon;
-        long long ts_raw;
-        float _f3, _f4, _f5;
-        unsigned w = 1;
-        int _got = sscanf(line, "%lld,%f,%f,%f,%f,%u", &ts_raw, &radon, &_f3, &_f4, &_f5, &w);
-        if (_got < 6) w = 1;          /* старый формат: одна запись — одно измерение */
-        if (_got >= 2) {
-            ts = (time_t)ts_raw;
+        radon_row_t row;
+        if (radon_csv_parse(line, &row)) {
+            time_t ts = row.ts;
             if (ts >= start_time && is_valid_time(ts)) {
                 if (points == 0 || ts < min_ts) min_ts = ts;
                 if (points == 0 || ts > max_ts) max_ts = ts;
-                sum += radon * (float)w;
-                points += w;
+                sum += row.radon * (float)row.w;
+                points += row.w;
+                rows++;
             }
         }
     }
@@ -334,8 +432,13 @@ static bool radon_stats_period_locked(uint32_t seconds_back, radon_period_t *out
        давали 17 %, и достоверное среднее помечалось недостоверным.
        К охвату добавляем один ожидаемый шаг: последняя точка представляет не
        мгновение, а промежуток до следующей. */
+    /* #RADEX-177: шаг считается по СТРОКАМ, а не по сумме весов. Строка — это
+       одна отметка на оси времени, сколько бы измерений она ни представляла;
+       после уплотнения 5 суточных строк дают шаг «сутки», а деление на 72
+       измерения дало бы полтора часа — величину, которой в файле нет.
+       На неуплотнённых данных rows == points, поведение прежнее. */
     uint32_t span = (uint32_t)(max_ts - min_ts);
-    uint32_t step = points > 1 ? span / (points - 1) : 0;
+    uint32_t step = rows > 1 ? span / (rows - 1) : 0;
     out->coverage = seconds_back ? (float)(span + step) / (float)seconds_back : 0.0f;
     if (out->coverage > 1.0f) out->coverage = 1.0f;
     out->valid = points >= 3 && out->coverage >= 0.8;
@@ -441,22 +544,16 @@ static void radon_stats_assess_range_locked(time_t from, time_t to,
     time_t test_start = from;
 
     while (fgets(line, sizeof(line), f)) {
-        time_t ts;
-        float radon;
-        long long ts_raw;
-        float _f3, _f4, _f5;
-        unsigned w = 1;
-        int _got = sscanf(line, "%lld,%f,%f,%f,%f,%u", &ts_raw, &radon, &_f3, &_f4, &_f5, &w);
-        if (_got < 6) w = 1;          /* старый формат: одна запись — одно измерение */
-        if (_got >= 2) {
-            ts = (time_t)ts_raw;
+        radon_row_t row;
+        if (radon_csv_parse(line, &row)) {
+            time_t ts = row.ts;
             if (test_start != 0 && ts < test_start) continue;   /* до начала интервала */
             if (to != 0 && ts > to) continue;                   /* после конца интервала */
             if (is_valid_time(ts)) {
                 if (points == 0 || ts < first_ts) first_ts = ts;
                 if (points == 0 || ts > last_ts) last_ts = ts;
-                sum += radon * (float)w;
-                points += w;
+                sum += row.radon * (float)row.w;
+                points += row.w;
             }
         }
     }
@@ -591,20 +688,14 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
     }
 
     while (fgets(line, sizeof(line), f)) {
-        time_t ts;
-        float radon;
-        long long ts_raw;
-        float _f3, _f4, _f5;
-        unsigned w = 1;
-        int _got = sscanf(line, "%lld,%f,%f,%f,%f,%u", &ts_raw, &radon, &_f3, &_f4, &_f5, &w);
-        if (_got < 6) w = 1;          /* старый формат: одна запись — одно измерение */
-        if (_got >= 2) {
-            ts = (time_t)ts_raw;
+        radon_row_t row;
+        if (radon_csv_parse(line, &row)) {
+            time_t ts = row.ts;
             if (is_valid_time(ts)) {
                 if (points == 0 || ts < first_ts) first_ts = ts;
                 if (points == 0 || ts > last_ts) last_ts = ts;
-                sum += radon * (float)w;
-                points += w;
+                sum += row.radon * (float)row.w;
+                points += row.w;
             }
         }
     }
@@ -731,7 +822,7 @@ static bool radon_stats_start_test_locked(void) {
     if (tf[0]) {
         FILE *tfp = fopen(tf, "w");
         if (tfp) {
-            fprintf(tfp, "time,radon,radon_avg,temp,hum\n");
+            fputs(RADON_CSV_HEADER, tfp);
             fclose(tfp);
         } else {
             ESP_LOGW(TAG, "не удалось создать файл замера %s (продолжаем без него)", tf);
@@ -834,11 +925,11 @@ static time_t radon_stats_test_start_eff_locked(void)
     if (!mounted) return 0;
     FILE *f = fopen(filename, "r");
     if (!f) return 0;
-    char line[128]; long long ts_raw; float r; time_t first = 0;
+    char line[128]; radon_row_t row; time_t first = 0;
     if (fgets(line, sizeof(line), f)) {          /* заголовок */
         while (fgets(line, sizeof(line), f)) {
-            if (sscanf(line, "%lld,%f", &ts_raw, &r) >= 2 && is_valid_time((time_t)ts_raw)) {
-                first = (time_t)ts_raw; break;
+            if (radon_csv_parse(line, &row) && is_valid_time(row.ts)) {
+                first = row.ts; break;
             }
         }
     }
@@ -902,12 +993,16 @@ static int radon_stats_tests_list_json_locked(char *buf, size_t len) {
 
         uint32_t points = 0;
         time_t first_ts = 0, last_ts = 0;
-        long long ts; float r, ra, t, h;
+        radon_row_t row;
         while (fgets(line, sizeof(line), f)) {
-            if (sscanf(line, "%lld,%f,%f,%f,%f", &ts, &r, &ra, &t, &h) == 5) {
-                if (points == 0 || ts < first_ts) first_ts = ts;
-                if (points == 0 || ts > last_ts) last_ts = ts;
-                points++;
+            /* #RADEX-174: points — число ИЗМЕРЕНИЙ, а не строк. Файл замера
+               уплотнению пока не подвергается, но правило разбора в модуле
+               одно на всех: иначе первое же уплотнение замера отдаст в список
+               «5 точек» вместо семидесяти одной. */
+            if (radon_csv_parse(line, &row)) {
+                if (points == 0 || row.ts < first_ts) first_ts = row.ts;
+                if (points == 0 || row.ts > last_ts) last_ts = row.ts;
+                points += row.w;
             }
         }
         fclose(f);
@@ -950,24 +1045,28 @@ static int radon_stats_test_points_json_locked(time_t start, char *buf, size_t l
     char line[128];
     if (!fgets(line, sizeof(line), f)) {   /* файл есть, но даже заголовка нет */
         fclose(f);
-        int n = snprintf(buf, len, "{\"n\":0,\"total\":0,\"step\":1,\"points\":[]}");
+        int n = snprintf(buf, len, "{\"n\":0,\"total\":0,\"rows\":0,\"step\":1,\"points\":[]}");
         return (n < 0 || (size_t)n >= len) ? -1 : n;
     }
 
-    long total = 0;
-    long long ts; float radon, radon_avg, temp, hum;
+    /* #RADEX-174: две РАЗНЫЕ величины, которые до правки были одной.
+       rows — сколько строк в файле (по ним считается прореживание графика),
+       total — сколько ИЗМЕРЕНИЙ они представляют (сумма весов). Смешивать их
+       нельзя: страница показывает число измерений, а рисует строки. */
+    long rows = 0, total = 0;
+    radon_row_t row;
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "%lld,%f,%f,%f,%f", &ts, &radon, &radon_avg, &temp, &hum) == 5) total++;
+        if (radon_csv_parse(line, &row)) { rows++; total += (long)row.w; }
     }
     fclose(f);
-    if (total == 0) {
-        int n = snprintf(buf, len, "{\"n\":0,\"total\":0,\"step\":1,\"points\":[]}");
+    if (rows == 0) {
+        int n = snprintf(buf, len, "{\"n\":0,\"total\":0,\"rows\":0,\"step\":1,\"points\":[]}");
         return (n < 0 || (size_t)n >= len) ? -1 : n;
     }
 
     int step = 1;
-    if (total > RADON_TEST_POINTS_MAX) {
-        step = (int)(total / RADON_TEST_POINTS_MAX);
+    if (rows > RADON_TEST_POINTS_MAX) {
+        step = (int)(rows / RADON_TEST_POINTS_MAX);
         if (step < 1) step = 1;
     }
 
@@ -981,23 +1080,28 @@ static int radon_stats_test_points_json_locked(time_t start, char *buf, size_t l
     long count = 0;
     int sent = 0;
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "%lld,%f,%f,%f,%f", &ts, &radon, &radon_avg, &temp, &hum) != 5) continue;
+        if (!radon_csv_parse(line, &row)) continue;
+        long long ts = (long long)row.ts;
 
-        bool keep = (count == 0) || (count == total - 1) ||
-                    (total <= RADON_TEST_POINTS_MAX) || (count % step == 0);
+        bool keep = (count == 0) || (count == rows - 1) ||
+                    (rows <= RADON_TEST_POINTS_MAX) || (count % step == 0);
         if (!keep) { count++; continue; }
 
-        float r_f = radon, c_f = temp, h_f = hum;
-        if (isnan(radon)) r_f = -1.0f;
-        if (isnan(temp))  c_f = -100.0f;
-        if (isnan(hum) || hum == 255.0f) h_f = -1.0f;
+        float r_f = row.radon, c_f = row.temp, h_f = row.hum;
+        if (isnan(row.radon)) r_f = -1.0f;
+        if (isnan(row.temp))  c_f = -100.0f;
+        if (isnan(row.hum) || row.hum == 255.0f) h_f = -1.0f;
         char rs[16], cs[16], hs[16];
         if (r_f < 0 || isnan(r_f)) snprintf(rs, sizeof(rs), "null"); else snprintf(rs, sizeof(rs), "%.2f", r_f);
         if (c_f < -90 || isnan(c_f)) snprintf(cs, sizeof(cs), "null"); else snprintf(cs, sizeof(cs), "%.1f", c_f);
         if (h_f < 0 || h_f > 100 || isnan(h_f)) snprintf(hs, sizeof(hs), "null"); else snprintf(hs, sizeof(hs), "%.0f", h_f);
 
-        written = snprintf(buf + pos, len - pos, "%s{\"t\":%lld,\"r\":%s,\"c\":%s,\"h\":%s}",
-                            sent > 0 ? "," : "", ts, rs, cs, hs);
+        /* w отдаётся всегда: страница считает по этим точкам среднее, и без
+           веса суточная средняя из 25 измерений весила бы столько же, сколько
+           одиночная точка (#RADEX-174). */
+        written = snprintf(buf + pos, len - pos,
+                            "%s{\"t\":%lld,\"r\":%s,\"c\":%s,\"h\":%s,\"w\":%u}",
+                            sent > 0 ? "," : "", ts, rs, cs, hs, (unsigned)row.w);
         if (written < 0 || (size_t)written >= len - pos) { fclose(f); return -1; }
         pos += (size_t)written;
         sent++;
@@ -1033,9 +1137,9 @@ static float radon_stats_last_radon_locked(void)
     char *last = NULL, *p2 = strtok(buf, "\n");
     while (p2) { last = p2; p2 = strtok(NULL, "\n"); }
     if (!last) return NAN;
-    long long ts; float radon;
-    if (sscanf(last, "%lld,%f", &ts, &radon) != 2) return NAN;
-    return radon;
+    radon_row_t row;
+    if (!radon_csv_parse(last, &row)) return NAN;
+    return row.radon;
 }
 
 
@@ -1050,10 +1154,17 @@ static void write_group(FILE *fout, long long grp_key, long long grp_from, long 
     float radon = (sum_n > 0) ? (float)(sum_r / sum_n) : 0.0f;
     float radon_avg = (sum_n > 0) ? (float)(sum_ravg / sum_n) : 0.0f;
     float temp = (cnt_t > 0) ? (float)(sum_t / cnt_t) : NAN;
-    float hum = (cnt_h > 0) ? (float)(sum_h / cnt_h) : 255.0f;
+    /* #RADEX-176: «влажности в группе не было» — это NAN, как и у температуры,
+       а НЕ 255. Прежняя заглушка 255.0f попадала в файл настоящим числом
+       (`...,nan,255,5` в истории оператора 01.09.2026) и была неотличима от
+       показания датчика: страница её маскировала частным условием hum==255,
+       а выгрузка в Excel и любой внешний потребитель принимали 255 % за
+       измеренную влажность. Отсутствие данных обязано выглядеть отсутствием
+       данных в одном и том же виде во всех полях. */
+    float hum = (cnt_h > 0) ? (float)(sum_h / cnt_h) : NAN;
     // Если radon == 0, то строку пропускаем
     if (isnan(radon) || radon == 0.0f) return;
-    fprintf(fout, "%lld,%.2f,%.2f,%.1f,%.0f,%u\n", ts, radon, radon_avg, temp, hum, sum_n);
+    radon_csv_write_row(fout, ts, radon, radon_avg, temp, hum, sum_n);
 }
 
 static int radon_stats_compact_locked(uint32_t raw_days, uint32_t hour_days) {
@@ -1113,21 +1224,17 @@ static int radon_stats_compact_locked(uint32_t raw_days, uint32_t hour_days) {
 
     while (fgets(line, sizeof(line), fin)) {
         total_in++;
-        long long ts;
-        float radon, radon_avg, temp, hum;
-        unsigned n;
-        /* Вес ОБЯЗАН быть проинициализирован до разбора: в строке старого формата
-           шестого поля нет, sscanf переменную не трогает, и в неё попадал мусор —
-           на живых данных это дало вес 3 169 380 492 и суммы вместо средних. */
-        n = 1;
-        int fields = sscanf(line, "%lld,%f,%f,%f,%f,%u", &ts, &radon, &radon_avg, &temp, &hum, &n);
-        if (fields < 6) n = 1;
-        if (fields < 5) {
-            // Старый формат — считаем n = 1
-            n = 1;
-            fields = sscanf(line, "%lld,%f,%f,%f,%f", &ts, &radon, &radon_avg, &temp, &hum);
-        }
-        if (fields < 5) continue;  // Пропускаем некорректные строки
+        /* #RADEX-174: разбор — общей функцией. Вес ОБЯЗАН быть
+           проинициализирован до разбора: в строке старого формата шестого поля
+           нет, sscanf переменную не трогает, и в неё попадал мусор — на живых
+           данных это дало вес 3 169 380 492 и суммы вместо средних. Теперь это
+           гарантирует сам radon_csv_parse, а не повторённая здесь проверка. */
+        radon_row_t row;
+        if (!radon_csv_parse(line, &row)) continue;   /* заголовок и мусор */
+        long long ts = (long long)row.ts;
+        float radon = row.radon, radon_avg = row.radon_avg;
+        float temp = row.temp, hum = row.hum;
+        unsigned n = row.w;
 
         int age_days = (now - ts) / 86400;
         int new_mode = 0;
@@ -1166,20 +1273,25 @@ static int radon_stats_compact_locked(uint32_t raw_days, uint32_t hour_days) {
             sum_r = radon * n;
             sum_ravg = radon_avg * n;
             sum_n = n;
-            sum_t = temp;
-            sum_h = hum;
-            cnt_t = isnan(temp) ? 0 : 1;
-            cnt_h = isnan(hum) ? 0 : 1;
+            /* #RADEX-176: в среднее идёт только то, что лежит в физических
+               границах датчика. Раньше условием было «не NAN», и любое
+               значение-маркер отказа (0xFF = 255 % влажности) усреднялось
+               наравне с измерениями и закреплялось в уплотнённой строке
+               навсегда — исходных строк после свёртки уже нет. */
+            cnt_t = temp_valid(temp) ? 1 : 0;
+            cnt_h = hum_valid(hum)  ? 1 : 0;
+            sum_t = cnt_t ? temp : 0.0;
+            sum_h = cnt_h ? hum  : 0.0;
         } else {
             // Продолжаем накапливать
             sum_r += radon * n;
             sum_ravg += radon_avg * n;
             sum_n += n;
-            if (!isnan(temp)) {
+            if (temp_valid(temp)) {
                 sum_t += temp;
                 cnt_t++;
             }
-            if (!isnan(hum)) {
+            if (hum_valid(hum)) {
                 sum_h += hum;
                 cnt_h++;
             }
@@ -1252,17 +1364,12 @@ bool radon_stats_mutex_create(void)
 
 bool radon_stats_lock(uint32_t timeout_ms)
 {
-#ifdef RADEX172_MUTATION_NO_LOCK
-    /* #SA-3, МУТАЦИЯ. Не включать в рабочей сборке. Собирается только вручную
-       (idf.py -DRADEX172_MUTATION_NO_LOCK=1) и служит одному: показать, что
-       нагрузочный стенд scripts/radex172_load_test.py УМЕЕТ КРАСНЕТЬ на своём
-       классе дефекта. Мьютекс превращается в пустышку, всё остальное в коде
-       остаётся тем же — значит покраснение объясняется снятой блокировкой, а
-       не побочной правкой. Зелёный стенд при этой мутации означал бы, что
-       стенд не проверяет то, ради чего написан. */
-    (void)timeout_ms;
-    return true;
-#else
+    /* #RADEX-174: мутационный переключатель RADEX172_MUTATION_NO_LOCK отсюда
+       удалён. Он делал своё дело (показал, что нагрузочный стенд умеет
+       краснеть), но отладочному переключателю в публикуемой прошивке не место:
+       достаточно однажды собрать релиз с лишним -D, чтобы мьютекс стал
+       пустышкой молча. Мутация повторяется правкой этой функции в рабочей
+       копии на время прогона, а не флагом, живущим в исходнике. */
     if (!s_mtx) {
         return false;
     }
@@ -1272,16 +1379,13 @@ bool radon_stats_lock(uint32_t timeout_ms)
     s_lock_timeouts++;
     ESP_LOGE(TAG, "radon_stats_lock timeout %u ms", timeout_ms);
     return false;
-#endif
 }
 
 void radon_stats_unlock(void)
 {
-#ifndef RADEX172_MUTATION_NO_LOCK   /* см. мутацию в radon_stats_lock */
     if (s_mtx) {
         xSemaphoreGiveRecursive(s_mtx);
     }
-#endif
 }
 
 uint32_t radon_stats_lock_timeouts(void)
@@ -1439,4 +1543,133 @@ int radon_stats_compact(uint32_t raw_days, uint32_t hour_days)
     int result = radon_stats_compact_locked(raw_days, hour_days);
     radon_stats_unlock();
     return result;
+}
+
+/* #RADEX-174: единый разбор строки истории и приём истории извне. */
+static FILE *s_import_f;
+static int s_import_rows;
+static const char *import_tmp = "/data/radon_imp.csv";
+
+bool radon_csv_parse(const char *line, radon_row_t *out)
+{
+    if (line == NULL || out == NULL) return false;
+
+    // Предварительно заполнить значениями по умолчанию
+    out->ts = 0;
+    out->radon = NAN;
+    out->radon_avg = NAN;
+    out->temp = NAN;
+    out->hum = NAN;
+    out->w = 1;
+
+    long long ts = 0;
+    float radon = NAN, radon_avg = NAN, temp = NAN, hum = NAN;
+    unsigned w = 1;
+
+    int fields = sscanf(line, "%lld,%f,%f,%f,%f,%u", &ts, &radon, &radon_avg, &temp, &hum, &w);
+    if (fields < 2) return false;
+
+    // Если вес равен нулю или не прочитан, считаем его равным 1
+    if (fields < 6 || w == 0) w = 1;
+
+    out->ts = ts;
+    out->radon = radon;
+    out->radon_avg = radon_avg;
+    out->temp = temp;
+    out->hum = hum;
+    out->w = w;
+
+    return true;
+}
+
+bool radon_stats_import_begin(void)
+{
+    if (!mounted) return false;
+    if (s_import_f != NULL) return false;
+
+    s_import_f = fopen(import_tmp, "w");
+    if (s_import_f == NULL) return false;
+
+    // Записываем заголовок вручную, чтобы формат был задан прошивкой
+    fputs(RADON_CSV_HEADER, s_import_f);
+    s_import_rows = 0;
+    return true;
+}
+
+bool radon_stats_import_line(const char *line)
+{
+    if (s_import_f == NULL) return false;
+    if (line == NULL || line[0] == '\0' || line[0] == '#') return true;
+
+    radon_row_t row;
+    if (!radon_csv_parse(line, &row)) return true; // Не разобрали — не считаем
+
+    /* Метка либо реальная (эпоха после 2023), либо относительная отрицательная
+       (#RADEX-113, часы ещё не синхронизированы). Диапазон между ними — мусор:
+       принять его значило бы датировать измерения 1970 годом и перекосить и
+       охват периода, и длительность замера. */
+    if (!(row.ts >= 1700000000 || row.ts < 0)) return true;
+
+    // Пропускаем строки с NaN или отрицательным значением радона
+    if (isnan(row.radon) || row.radon < 0) return true;
+
+    /* #RADEX-176: значения вне физических границ на входе не сохраняем как
+       числа. Импортируют в том числе выгрузки, сделанные ДО этой правки, а в
+       них влажность «нет данных» записана как 255 — принять её измерением
+       значило бы завезти артефакт обратно вместе с восстановленной историей. */
+    if (!temp_valid(row.temp)) row.temp = NAN;
+    if (!hum_valid(row.hum))   row.hum  = NAN;
+
+    /* Записываем в файл в каноническом виде. Вход может быть пятиколоночным
+       (выгрузка со старой платы) — на выходе он всегда шестиколоночный. */
+    radon_csv_write_row(s_import_f, (long long)row.ts, row.radon, row.radon_avg,
+                        row.temp, row.hum, (unsigned)row.w);
+
+    if (ferror(s_import_f)) return false;
+
+    s_import_rows++;
+    return true;
+}
+
+void radon_stats_import_abort(void)
+{
+    if (s_import_f != NULL) {
+        fclose(s_import_f);
+        s_import_f = NULL;
+    }
+    remove(import_tmp);
+    s_import_rows = 0;
+}
+
+int radon_stats_import_commit(void)
+{
+    if (s_import_f == NULL) return -1;
+
+    fclose(s_import_f);
+    s_import_f = NULL;
+
+    if (s_import_rows == 0) {
+        remove(import_tmp);
+        return -1;
+    }
+
+    if (!radon_stats_lock(RS_LOCK_MS_WRITE)) {
+        remove(import_tmp);
+        return -1;
+    }
+
+    // Удаляем старый файл и переименовываем временный
+    remove(filename);
+    int ret = rename(import_tmp, filename);
+    if (ret != 0) {
+        radon_stats_bump_generation();
+        radon_stats_unlock();
+        ESP_LOGE(TAG, "#RADEX-174: ошибка при замене файла истории");
+        return -1;
+    }
+
+    radon_stats_bump_generation();
+    radon_stats_unlock();
+    ESP_LOGW(TAG, "#RADEX-174: история заменена импортом, строк: %d", s_import_rows);
+    return s_import_rows;
 }

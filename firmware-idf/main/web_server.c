@@ -774,25 +774,28 @@ static esp_err_t handle_history_range_body(httpd_req_t *req)
     FILE *f = fopen(radon_stats_file(), "r");
     if (!f) {
         // Файл не существует или не открылся — возвращаем пустой ответ
-        static char empty_resp[] = "{\"n\":0,\"total\":0,\"step\":1,\"points\":[]}";
+        static char empty_resp[] = "{\"n\":0,\"total\":0,\"rows\":0,\"step\":1,\"points\":[]}";
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_send(req, empty_resp, strlen(empty_resp));
     }
     
-    // Первый проход: подсчитываем количество строк в интервале
-    int total = 0;
-    long long ts;
-    float radon, radon_avg, temp, hum;
-    
+    /* #RADEX-174: первый проход считает ДВЕ разные величины.
+       rows — сколько СТРОК файла попало в интервал: по ним и только по ним
+       считается прореживание и отсечка второго прохода, потому что отдаём мы
+       строки. total — сколько ИЗМЕРЕНИЙ эти строки представляют (сумма весов
+       шестого поля): именно это число сверяется с /api/stats storage.points и
+       показывается человеку. До правки величина была одна, и после уплотнения
+       истории страница сообщала «5 точек» там, где измерений был 71. */
+    int rows = 0;
+    long total = 0;
+    radon_row_t row;
+
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "%lld,%f,%f,%f,%f", &ts, &radon, &radon_avg, &temp, &hum) == 5) {
-            // Пропускаем строку заголовка
-            if (ts == 0 && radon == 0 && radon_avg == 0 && temp == 0 && hum == 0)
-                continue;
-                
+        if (radon_csv_parse(line, &row)) {
             // Проверяем попадание в интервал
-            if (ts >= from && (to == 0 || ts <= to)) {
-                total++;
+            if (row.ts >= from && (to == 0 || row.ts <= to)) {
+                rows++;
+                total += (long)row.w;
             }
         }
     }
@@ -801,23 +804,23 @@ static esp_err_t handle_history_range_body(httpd_req_t *req)
     fclose(f);
     
     // Если нет подходящих строк, возвращаем пустой ответ
-    if (total == 0) {
-        static char empty_resp[] = "{\"n\":0,\"total\":0,\"step\":1,\"points\":[]}";
+    if (rows == 0) {
+        static char empty_resp[] = "{\"n\":0,\"total\":0,\"rows\":0,\"step\":1,\"points\":[]}";
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_send(req, empty_resp, strlen(empty_resp));
     }
     
-    // Вычисляем шаг прореживания
+    // Вычисляем шаг прореживания — по СТРОКАМ, их и прореживаем
     int step = 1;
-    if (total > max) {
-        step = total / max;
+    if (rows > max) {
+        step = rows / max;
         if (step < 1) step = 1;
     }
     
     // Открываем файл снова для второго прохода
     f = fopen(radon_stats_file(), "r");
     if (!f) {
-        static char empty_resp[] = "{\"n\":0,\"total\":0,\"step\":1,\"points\":[]}";
+        static char empty_resp[] = "{\"n\":0,\"total\":0,\"rows\":0,\"step\":1,\"points\":[]}";
         httpd_resp_set_type(req, "application/json");
         return httpd_resp_send(req, empty_resp, strlen(empty_resp));
     }
@@ -827,8 +830,8 @@ static esp_err_t handle_history_range_body(httpd_req_t *req)
     int chunk_len = 0;
     
     // Начинаем формировать JSON-ответ
-    chunk_len = snprintf(chunk, sizeof(chunk), 
-        "{\"total\":%d,\"step\":%d,\"points\":[", total, step);
+    chunk_len = snprintf(chunk, sizeof(chunk),
+        "{\"total\":%ld,\"rows\":%d,\"step\":%d,\"points\":[", total, rows, step);
     
     // Отправляем начальную часть ответа
     httpd_resp_set_type(req, "application/json");
@@ -845,28 +848,27 @@ static esp_err_t handle_history_range_body(httpd_req_t *req)
            строки — и без этой отсечки ответ содержал бы n > total, то есть сам
            себе противоречил. Отсечка делает ответ согласованным по построению,
            а не по удаче: лишние свежие точки просто приедут следующим запросом. */
-        if (sent >= total) break;
-        if (sscanf(line, "%lld,%f,%f,%f,%f", &ts, &radon, &radon_avg, &temp, &hum) == 5) {
-            // Пропускаем строку заголовка
-            if (ts == 0 && radon == 0 && radon_avg == 0 && temp == 0 && hum == 0)
-                continue;
+        if (sent >= rows) break;
+        if (radon_csv_parse(line, &row)) {
+            long long ts = (long long)row.ts;
+            float radon = row.radon, temp = row.temp, hum = row.hum;
 
             // Проверяем попадание в интервал
             if (ts >= from && (to == 0 || ts <= to)) {
                 // Если нужно прореживать и шаг не подошел, пропускаем
-                if (total > max && count % step != 0 && count != 0 && count != total - 1) {
+                if (rows > max && count % step != 0 && count != 0 && count != rows - 1) {
                     count++;
                     continue;
                 }
-                
+
                 // Отправляем первую точку всегда
                 if (count == 0 || send_first) {
                     send_first = 0;
-                } else if (total > max && count % step != 0) {
+                } else if (rows > max && count % step != 0) {
                     count++;
                     continue;
                 }
-                
+
                 /* Значения храним во float: приведение к int теряло дробную
                    часть (радон 127 вместо 127.22). Маркеры «не измерено»
                    выносим за пределы физически возможных значений. */
@@ -887,8 +889,14 @@ static esp_err_t handle_history_range_body(httpd_req_t *req)
                 else                         snprintf(cs, sizeof(cs), "%.1f", c_f);
                 if (h_f < 0 || h_f > 100 || isnan(h_f)) snprintf(hs, sizeof(hs), "null");
                 else                                    snprintf(hs, sizeof(hs), "%.0f", h_f);
+                /* #RADEX-174: вес точки отдаётся всегда. Страница считает по
+                   этим точкам среднее и погрешность; без веса суточная средняя
+                   из 25 измерений весила бы столько же, сколько одиночная
+                   точка, и среднее по «Всему времени» разошлось бы с тем, что
+                   плата отдаёт в /api/stats. */
                 int point_len = snprintf(chunk, sizeof(chunk),
-                    "{\"t\":%lld,\"r\":%s,\"c\":%s,\"h\":%s}", ts, rs, cs, hs);
+                    "{\"t\":%lld,\"r\":%s,\"c\":%s,\"h\":%s,\"w\":%u}",
+                    ts, rs, cs, hs, (unsigned)row.w);
                 
                 /* Запятую ставим ПЕРЕД точкой, начиная со второй отданной.
                    Прежнее условие «не последняя входная» ломало ответ при
@@ -1002,6 +1010,107 @@ static esp_err_t handle_tests_points(httpd_req_t *req)
        и отпускает ДО того, как байты уйдут в сеть. Держать его ещё и снаружи
        значило бы вернуть ту самую блокировку писателя на время передачи. */
     esp_err_t rc = handle_tests_points_body(req);
+    http_io_gate_leave();
+    return rc;
+}
+
+/* #RADEX-174: приём истории извне. */
+#define RADON_IMPORT_MAX_BYTES 262144
+
+static esp_err_t handle_history_import_body(httpd_req_t *req)
+{
+    /* content_len у esp_http_server — size_t, поэтому «пусто» это ровно ноль,
+       а не «меньше или равно нулю»: со знаковым сравнением компилятор ругается
+       на заведомо ложное условие, и проверка выглядела бы работающей. */
+    if (req->content_len == 0 || req->content_len > RADON_IMPORT_MAX_BYTES) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "размер тела превышает допустимый");
+        return ESP_FAIL;
+    }
+
+    if (!radon_stats_import_begin()) {
+        /* В esp_http_server кода 503 в httpd_err_code_t нет — ближайший по
+           смыслу «сервер занят/не может обслужить» это 500; текст объясняет
+           причину. Полосу 503 отдаёт обёртка через http_io_gate. */
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "импорт уже идёт либо хранилище недоступно");
+        return ESP_FAIL;
+    }
+
+    static char rbuf[1024];
+    static char lbuf[192];
+    static size_t lpos = 0;
+
+    lpos = 0; // обнуляем позицию строки перед началом
+
+    /* Без sys/param.h макроса MIN в этом файле нет, а подключать заголовок ради
+       одной строки — лишняя зависимость: берём минимум явно. */
+    size_t remaining = req->content_len;
+    while (remaining > 0) {
+        size_t want = remaining < sizeof(rbuf) ? remaining : sizeof(rbuf);
+        int recv_len = httpd_req_recv(req, rbuf, want);
+        if (recv_len == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        } else if (recv_len <= 0) {
+            radon_stats_import_abort();
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "обрыв приёма");
+            return ESP_FAIL;
+        }
+
+        for (int i = 0; i < recv_len; ++i) {
+            char c = rbuf[i];
+            if (c == '\r') {
+                continue; // игнорируем \r
+            } else if (c == '\n') {
+                lbuf[lpos] = '\0';
+                if (!radon_stats_import_line(lbuf)) {
+                    radon_stats_import_abort();
+                    httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ошибка импорта строки");
+                    return ESP_FAIL;
+                }
+                lpos = 0;
+            } else {
+                if (lpos < sizeof(lbuf) - 1) {
+                    lbuf[lpos++] = c;
+                }
+            }
+        }
+
+        remaining -= (size_t)recv_len;
+    }
+
+    // если осталась незавершённая строка
+    if (lpos > 0) {
+        lbuf[lpos] = '\0';
+        if (!radon_stats_import_line(lbuf)) {
+            radon_stats_import_abort();
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "ошибка импорта строки");
+            return ESP_FAIL;
+        }
+    }
+
+    int n = radon_stats_import_commit();
+    if (n < 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "импорт отклонён: годных строк нет либо хранилище занято");
+        return ESP_FAIL;
+    }
+
+    char out[96];
+    int len = snprintf(out, sizeof(out), "{\"ok\":true,\"rows\":%d,\"generation\":%u}",
+                       n, (unsigned)radon_stats_generation());
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, out, len);
+    ESP_LOGW(TAG, "#RADEX-174: импорт истории принят, строк: %d", n);
+
+    return ESP_OK;
+}
+
+static esp_err_t handle_history_import(httpd_req_t *req)
+{
+    // #RADEX-174: импорт переписывает файл истории целиком — это самая тяжёлая
+    // файловая операция в прошивке, она обязана идти в той же полосе, что экспорт и график,
+    // иначе запись пойдёт одновременно с чтением
+    if (!http_io_gate_enter_wait_or_503(req, 5000)) return ESP_OK;
+    esp_err_t rc = handle_history_import_body(req);
     http_io_gate_leave();
     return rc;
 }
@@ -1166,6 +1275,7 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/export.csv",.method = HTTP_GET,  .handler = handle_export },
     { .uri = "/api/test",      .method = HTTP_POST, .handler = handle_test_ctl },
     { .uri = "/api/history/range", .method = HTTP_GET, .handler = handle_history_range },
+    { .uri = "/api/history/import", .method = HTTP_POST, .handler = handle_history_import },   /* #RADEX-174 */
     { .uri = "/api/assess", .method = HTTP_GET, .handler = handle_assess },
     { .uri = "/api/cycle", .method = HTTP_GET, .handler = handle_cycle },
     { .uri = "/api/compact", .method = HTTP_POST, .handler = handle_compact },

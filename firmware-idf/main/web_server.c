@@ -17,6 +17,7 @@
 #include "narodmon.h"
 #include "radon_stats.h"
 #include "poll_cycle.h"
+#include "http_io_gate.h"   /* #RADEX-171: полоса тяжёлых файловых запросов */
 #include <nvs.h>
 
 #include <esp_http_server.h>
@@ -36,6 +37,27 @@
 
 
 static const char *TAG = "web";
+
+/* #RADEX-170. ЕСЛИ ВЫ СОБИРАЕТЕСЬ ДОБАВИТЬ ASYNC-ОБРАБОТЧИК — СНАЧАЛА СЮДА.
+   Восемь обработчиков ниже держат буферы ответа в `static char` (~30 КБ):
+   handle_history, handle_log, handle_log_download, handle_stats, handle_assess,
+   handle_cycle, handle_export_body, handle_history_range_body. На стеке задачи
+   httpd им места нет — cfg.stack_size = 6144.
+   `static` безопасен ровно по одной причине: esp_http_server обслуживает все
+   соединения ОДНОЙ задачей в цикле select(), а асинхронных обработчиков в
+   проекте нет (httpd_req_async_handler_begin не вызывается нигде — проверено
+   грепом 01.09.2026). Два обработчика физически не могут идти одновременно,
+   делить буфер не с кем. Второй httpd в прошивке есть (captive-портал,
+   wifi_manager.c), но он живёт ТОЛЬКО в NET_MODE_SETUP, когда этот сервер не
+   запускается вовсе (см. проверку wifi_manager_mode() в main.c).
+   Как только появится httpd_req_async_handler_begin(), второй httpd на этих
+   же обработчиках или своя задача, их дёргающая, — КАЖДЫЙ буфер станет гонкой.
+   Проявится она не отказом, а перемешанными ответами: запрос увидит куски
+   чужого JSON. Перед таким шагом перевести буферы на heap_caps_malloc(
+   MALLOC_CAP_SPIRAM)+free (образец — handle_tests_list) либо на стек, подняв
+   cfg.stack_size. Сейчас динамику не вводим намеренно: 30 КБ malloc/free на
+   запрос — фрагментация ради проблемы, которой при однопоточном сервере нет.
+   Это НЕ про гонку с задачей BLE — та отдельная, см. #RADEX-172. */
 
 #define EMBED_HTML_HANDLER(fn, sym)                                          \
     static esp_err_t fn(httpd_req_t *req) {                                  \
@@ -62,7 +84,7 @@ static esp_err_t handle_data(httpd_req_t *req)
 // отдаём одним куском — на 120 точках это ~8 КБ, дробить незачем.
 static esp_err_t handle_history(httpd_req_t *req)
 {
-    static char buf[10240];          // static: 10 КБ на стеке httpd не поместятся
+    static char buf[10240];          // static: 10 КБ на стеке httpd не поместятся   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int n = log_ring_hist_json(buf, sizeof(buf));
     if (n < 0) return httpd_resp_send_500(req);
     httpd_resp_set_type(req, "application/json");
@@ -97,7 +119,7 @@ static void extract_prefix(httpd_req_t *req, char *out, size_t out_sz)
 
 static esp_err_t handle_log(httpd_req_t *req)
 {
-    static char buf[8192];
+    static char buf[8192];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int n = log_ring_dump(buf, sizeof(buf));
     if (n < 0) return httpd_resp_send_500(req);
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
@@ -111,7 +133,7 @@ static esp_err_t handle_log(httpd_req_t *req)
    набор файлов от одного прибора узнаётся по общему префиксу в имени. */
 static esp_err_t handle_log_download(httpd_req_t *req)
 {
-    static char buf[8192];
+    static char buf[8192];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int n = log_ring_dump(buf, sizeof(buf));
     if (n < 0) return httpd_resp_send_500(req);
 
@@ -240,7 +262,7 @@ static esp_err_t handle_stats(httpd_req_t *req) {
         nvs_close(h);
     }
 
-    static char buf[1536];   /* static: 1.5 КБ на стеке httpd не помещаются */
+    static char buf[1536];   /* static: 1.5 КБ на стеке httpd не помещаются */   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int len = radon_stats_json(buf, sizeof(buf), (float)crl, ud / 100.0f, restr != 0);
     if (len < 0 || len >= (int)sizeof(buf)) {
         httpd_resp_send_500(req);
@@ -276,7 +298,7 @@ static esp_err_t handle_assess(httpd_req_t *req) {
         nvs_close(h);
     }
 
-    static char buf[512];
+    static char buf[512];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int len = radon_stats_assess_json(buf, sizeof(buf), from, to,
                                       (float)crl, ud / 100.0f, restr != 0);
     if (len < 0 || len >= (int)sizeof(buf)) {
@@ -293,7 +315,7 @@ static esp_err_t handle_assess(httpd_req_t *req) {
    живых данных было НЕЧЕМ. Механизм, чью работу нельзя наблюдать, нельзя и
    принять — отсюда маршрут. */
 static esp_err_t handle_cycle(httpd_req_t *req) {
-    static char buf[192];
+    static char buf[192];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int len = poll_cycle_json(buf, sizeof(buf));
     if (len < 0 || len >= (int)sizeof(buf)) {
         httpd_resp_send_500(req);
@@ -590,7 +612,12 @@ static esp_err_t handle_time_set(httpd_req_t *req) {
     return ESP_OK;
 }
 
-static esp_err_t handle_export(httpd_req_t *req) {
+/* #RADEX-171/172: тело вынесено в отдельную функцию НАМЕРЕННО. Обёртка ниже
+   берёт gate и мьютекс и отпускает их ровно один раз, каким бы из своих
+   ветвлений тело ни вышло. Разложить enter/leave по всем return'ам тела было
+   бы тем же самым лишь до первой новой ветки: забытый leave навсегда закрывает
+   тяжёлую полосу для ВСЕХ запросов, и проявляется это не сразу. */
+static esp_err_t handle_export_body(httpd_req_t *req) {
     const char *fname = radon_stats_file();
     FILE *f = fopen(fname, "r");
     if (!f) {
@@ -623,7 +650,7 @@ static esp_err_t handle_export(httpd_req_t *req) {
     httpd_resp_set_type(req, "text/csv; charset=utf-8");
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
 
-    static char chunk[1024]; /* тот же довод: стек задачи веб-сервера мал */
+    static char chunk[1024]; /* тот же довод: стек задачи веб-сервера мал */   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     size_t bytes_read;
     while ((bytes_read = fread(chunk, 1, sizeof(chunk), f)) > 0) {
         esp_err_t err = httpd_resp_send_chunk(req, chunk, bytes_read);
@@ -636,6 +663,27 @@ static esp_err_t handle_export(httpd_req_t *req) {
     fclose(f);
     httpd_resp_send_chunk(req, NULL, 0); // завершение
     return ESP_OK;
+}
+
+/* Выгрузка всего файла истории — самый тяжёлый запрос платы. Ждём слот до 3 с,
+   а не отказываем сразу: выгрузку запускает человек кнопкой, повторить её
+   некому, и подождать секунду ему лучше, чем получить 503. */
+static esp_err_t handle_export(httpd_req_t *req) {
+    if (!http_io_gate_enter_wait_or_503(req, 3000)) return ESP_OK;   /* 503 уже отправлен */
+    /* #RADEX-172: мьютекс здесь НЕ держим — см. подробное обоснование в
+       radon_stats.h. Коротко: экспорт файла 188 КБ на RSSI -88 дБм измерен в
+       ~14 с, дольше таймаута писателя, и показание терялось. Дозапись
+       читателю не мешает, поэтому сверяем ПОКОЛЕНИЕ файла: если за время
+       отдачи файл пересобрали (прореживание, compact, reset), ответ битый и
+       его надо оборвать, а не досылать вперемешку. */
+    uint32_t gen0 = radon_stats_generation();
+    esp_err_t rc = handle_export_body(req);
+    if (rc == ESP_OK && radon_stats_generation() != gen0) {
+        ESP_LOGW(TAG, "#RADEX-172: файл истории пересобран во время экспорта, ответ оборван");
+        rc = ESP_FAIL;   /* соединение закроется, клиент увидит обрыв, а не склейку */
+    }
+    http_io_gate_leave();
+    return rc;
 }
 
 
@@ -685,10 +733,13 @@ static esp_err_t handle_test_ctl(httpd_req_t *req)
 #include <time.h>
 
 
-static esp_err_t handle_history_range(httpd_req_t *req)
+/* #RADEX-171/172: тело + обёртка, довод тот же, что у handle_export. Здесь
+   ветвлений с ранним return четыре (файл не открылся дважды, пустой интервал,
+   успех) — ровно тот случай, где ручная расстановка leave отказывает. */
+static esp_err_t handle_history_range_body(httpd_req_t *req)
 {
     // Буфер для строки из файла (128 байт)
-    static char line[128];
+    static char line[128];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     
     /* Параметры запроса. Разбор ОБЯЗАН идти по коду возврата, а не по длине
        буфера, и в СВОЙ буфер, а не в общий с чтением файла. Прежняя версия
@@ -772,7 +823,7 @@ static esp_err_t handle_history_range(httpd_req_t *req)
     }
     
     // Буфер для отправки частей ответа
-    static char chunk[1024];
+    static char chunk[1024];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int chunk_len = 0;
     
     // Начинаем формировать JSON-ответ
@@ -788,11 +839,18 @@ static esp_err_t handle_history_range(httpd_req_t *req)
     int send_first = 1;  // Флаг для отправки первой точки
     
     while (fgets(line, sizeof(line), f)) {
+        /* #RADEX-172: второй проход НИКОГДА не отдаёт больше, чем насчитал
+           первый. Мьютекс на оба прохода мы не держим (он starve'ит писателя,
+           измерено), поэтому между проходами задача BLE успевает дописать
+           строки — и без этой отсечки ответ содержал бы n > total, то есть сам
+           себе противоречил. Отсечка делает ответ согласованным по построению,
+           а не по удаче: лишние свежие точки просто приедут следующим запросом. */
+        if (sent >= total) break;
         if (sscanf(line, "%lld,%f,%f,%f,%f", &ts, &radon, &radon_avg, &temp, &hum) == 5) {
             // Пропускаем строку заголовка
             if (ts == 0 && radon == 0 && radon_avg == 0 && temp == 0 && hum == 0)
                 continue;
-                
+
             // Проверяем попадание в интервал
             if (ts >= from && (to == 0 || ts <= to)) {
                 // Если нужно прореживать и шаг не подошел, пропускаем
@@ -858,8 +916,28 @@ static esp_err_t handle_history_range(httpd_req_t *req)
     
     // Отправляем завершающий NULL-чанк
     httpd_resp_send_chunk(req, NULL, 0);
-    
+
     return ESP_OK;
+}
+
+/* Запрос графика — интерактивный: страница дёргает его при каждой смене
+   диапазона. Ждём слот дольше, чем у export (5 с): мгновенный 503 здесь
+   означает пустой график у человека, который ничего плохого не сделал —
+   просто в этот момент кто-то качал историю. */
+static esp_err_t handle_history_range(httpd_req_t *req)
+{
+    if (!http_io_gate_enter_wait_or_503(req, 5000)) return ESP_OK;   /* 503 уже отправлен */
+    /* Мьютекс не держим — довод тот же, что у handle_export. Согласованность
+       ответа обеспечена отсечкой sent >= total внутри тела, а пересборку файла
+       ловим по поколению. */
+    uint32_t gen0 = radon_stats_generation();
+    esp_err_t rc = handle_history_range_body(req);
+    if (rc == ESP_OK && radon_stats_generation() != gen0) {
+        ESP_LOGW(TAG, "#RADEX-172: файл пересобран во время выдачи графика");
+        rc = ESP_FAIL;
+    }
+    http_io_gate_leave();
+    return rc;
 }
 
 /* #RADEX-102: список сохранённых замеров для карточки на «Графиках». Буфер —
@@ -886,7 +964,7 @@ static esp_err_t handle_tests_list(httpd_req_t *req)
    query-параметр, не сегмент пути: остальные маршруты с параметром в этом
    проекте (history/range, assess, compact) везде принимают строку запроса,
    отдельный стиль под один маршрут заводить незачем. */
-static esp_err_t handle_tests_points(httpd_req_t *req)
+static esp_err_t handle_tests_points_body(httpd_req_t *req)
 {
     char query[64], val[24];
     long long start = 0;
@@ -912,6 +990,20 @@ static esp_err_t handle_tests_points(httpd_req_t *req)
     esp_err_t e = httpd_resp_send(req, buf, n);
     free(buf);
     return e;
+}
+
+/* #RADEX-171/172: тот же интерактивный класс, что history/range. Мьютекс нужен
+   и сверх модульного: тело само делает fopen(tf) в обход radon_stats.c. */
+static esp_err_t handle_tests_points(httpd_req_t *req)
+{
+    if (!http_io_gate_enter_wait_or_503(req, 5000)) return ESP_OK;
+    /* Здесь мьютекс тоже не держим через отправку: тело собирает ответ целиком
+       в буфер вызовом radon_stats_test_points_json(), а тот берёт мьютекс сам
+       и отпускает ДО того, как байты уйдут в сеть. Держать его ещё и снаружи
+       значило бы вернуть ту самую блокировку писателя на время передачи. */
+    esp_err_t rc = handle_tests_points_body(req);
+    http_io_gate_leave();
+    return rc;
 }
 
 static esp_err_t handle_system(httpd_req_t *req)
@@ -943,7 +1035,15 @@ static esp_err_t handle_system(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "{\"fw\":\"%s\",\"uptime_sec\":%lld,\"free_heap\":%u,\"heap_total\":%u,\"min_free_heap\":%u,"
         "\"psram_free\":%u,\"wifi_rssi\":%d,\"wifi_connected\":%s,\"ap_mode\":%s,"
-        "\"wifi_tx_dbm\":%d,\"ble_tx_dbm\":%d}",
+        /* #RADEX-171/172: наблюдаемость защиты от гонки. io_rejects — сколько
+           тяжёлых запросов получили 503 (это НЕ ошибка, полоса работает как
+           задумано); lock_timeouts — сколько раз мьютекс истории НЕ достался
+           за отведённое время. Второй счётчик обязан быть нулём: ненулевой
+           означает, что запись измерения из BLE-задачи не дождалась долгого
+           читателя (экспорт большого файла на слабом канале) и показание
+           потеряно. Молча такое не должно происходить — потому и в /api/system. */
+        "\"wifi_tx_dbm\":%d,\"ble_tx_dbm\":%d,"
+        "\"io_rejects\":%u,\"lock_timeouts\":%u}",
         app ? app->version : "?",
         (long long)(esp_timer_get_time() / 1000000),
         (unsigned)esp_get_free_heap_size(),
@@ -955,7 +1055,9 @@ static esp_err_t handle_system(httpd_req_t *req)
         rssi,
         wifi_is_connected() ? "true" : "false",
         wifi_manager_is_ap_mode() ? "true" : "false",
-        wifi_dbm, ble_dbm);
+        wifi_dbm, ble_dbm,
+        (unsigned)http_io_gate_reject_count(),
+        (unsigned)radon_stats_lock_timeouts());
     if (n < 0 || n >= (int)sizeof(buf)) return httpd_resp_send_500(req);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);

@@ -1,0 +1,59 @@
+# ── Платформа ───────────────────────────────────────────────────────────────
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# ── PSRAM ───────────────────────────────────────────────────────────────────
+# Обязателен: кольцевой лог debug_log_ring берёт 384 КБ из SPIRAM и без него
+# не поднимается (fallback в internal RAM в доноре не написан).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ── Bluetooth: только BLE, Bluedroid ────────────────────────────────────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=y
+CONFIG_BT_CLASSIC_ENABLED=n
+CONFIG_BT_BLE_ENABLED=y
+CONFIG_BT_GATTC_ENABLE=y
+CONFIG_BT_GATTS_ENABLE=y
+CONFIG_BT_BLE_SMP_ENABLE=y
+
+# BLE 4.2 API обязателен: esp_ble_gattc_open() с типом адреса — функция из
+# набора 4.2, без этой опции она не попадает в библиотеку и линковка падает
+# с undefined reference (проверено на этой сборке 2026-08-27).
+CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
+
+# BLE 5.0 ЯВНО выключен (#RADEX-154, причина разобрана в #RADEX-145). Kconfig
+# Espressif: «BLE 4.2 and BLE 5.0 cannot be used simultaneously». При обоих
+# наборах сразу l2c_ble.c молча переводит esp_ble_gattc_open() на extended-
+# connect (HCI opcode 0x2043) через липкий флаг btm_ble_inter_get(); после
+# реального разрыва rsn=0x8 контроллер отвечает Cmd Disallowed на 0x2043
+# навсегда — переподключение больше не проходит. 5.0 приезжал дефолтом Kconfig.
+CONFIG_BT_BLE_50_FEATURES_SUPPORTED=n
+
+# Максимальная мощность передатчика. Прибор отдаёт -96 dBm в среднем
+# (замер 2026-08-27), запаса по сигналу нет — берём всё, что даёт чип.
+CONFIG_BT_CTRL_DFT_TX_POWER_LEVEL_P20=y
+
+# ── Wi-Fi ───────────────────────────────────────────────────────────────────
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+CONFIG_LWIP_LOCAL_HOSTNAME="radex-gw"
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65535
+CONFIG_LWIP_TCP_WND_DEFAULT=65535
+
+# ── HTTP ────────────────────────────────────────────────────────────────────
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=1024
+
+# ── Логи ────────────────────────────────────────────────────────────────────
+# MAXIMUM_LEVEL_DEBUG обязателен: без него уровень "debug" кольцевого лога
+# вырезается компилятором и переключатель в Web UI становится мёртвым.
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+
+# ── Система ─────────────────────────────────────────────────────────────────
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

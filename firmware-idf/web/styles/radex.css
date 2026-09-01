@@ -1,0 +1,270 @@
+/* Страница шлюза Radex MR107ion: график с периодами и нормативом, заключение
+   по методике, таблица средних, вкладка «Графики», диагностика, лог платы,
+   сканер приборов. Подключается ПОСЛЕ базового. */
+
+/* Диагностика: много коротких пар «название — значение». Два столбца на
+   телефоне, дальше по месту. */
+.diag-grid{display:grid;gap:var(--sp-2);margin-bottom:var(--sp-3);grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr))}
+.diag-grid .card{margin-bottom:0}
+.diag-grid .card-title{margin-bottom:2px}
+.diag-grid .card-value{font-size:var(--fs-lg);font-weight:600}
+@media(min-width:640px){.diag-grid{gap:10px;grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}}
+
+/* #RADEX-142, оператор: «показания и погрешность выведи одним шрифтом» —
+   карточка «Среднее расчётное ОА»: «124» (.card-value, bold ink) и «± 25
+   Бк/м³» (class="sub" — унаследовано от подписи-подзаголовка: dim-цвет,
+   обычное начертание) читались РАЗНЫМ шрифтом при равном размере
+   (#RADEX-131 унифицировал только font-size инлайн-стилем, вес/цвет
+   .sub остались). ID-селектор перебивает специфичность .sub — цвет здесь
+   не финальный: JS (showMeanCard(), index.src.html) перекрашивает inline
+   по зоне индикатора при каждом обновлении (#RADEX-142 п.2). */
+#radon-mean-unc,#radon-mean-unit{font-weight:700;color:var(--ink)}
+
+/* Легенда графика. Подпись со средним стояла прямо на кривой и не читалась;
+   здесь она рядом с холстом, а цвет мазка совпадает с цветом на графике. */
+.chart-legend{display:flex;flex-wrap:wrap;gap:4px var(--sp-3);margin-top:6px;font-size:11px;color:var(--dim)}
+.chart-legend>span{display:inline-flex;align-items:center;gap:6px}
+.chart-legend>span::before{content:"";width:16px;height:2px;border-radius:1px;background:var(--sw,var(--dim))}
+.chart-legend .lg-data{--sw:var(--data-line)}
+/* #RADEX-126: единственный .chart-legend в разметке — на «Показаниях»,
+   поэтому безопасно переключить именно эту легенду на --data-mean-alt. */
+.chart-legend .lg-mean{--sw:var(--data-mean-alt)}
+.chart-legend .lg-limit{--sw:var(--data-limit)}
+/* Норматив на графике — пунктир, мазок в легенде тоже. */
+.chart-legend .lg-limit::before{background:repeating-linear-gradient(90deg,var(--data-limit) 0 5px,transparent 5px 8px)}
+
+.chart-controls{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--sp-3)}
+/* #RADEX-108, оператор: «на айфоне в сафари ломаются кнопки». Кнопкам было
+   разрешено сжиматься (flex-shrink:1), а переносу текста внутри ничто не мешало:
+   Safari ужимал их до ширины одной буквы, и «30 дней» вставало вертикальным
+   столбиком из букв. Ряд и так переносится по wrap — значит кнопке достаточно
+   запретить сжиматься уже содержимого, и она уедет на следующую строку целиком.
+   min-width:max-content нужен отдельно: min-width:auto у flex-элемента Safari
+   трактует иначе, чем ожидает спецификация. */
+.chart-controls>button{flex:1 1 auto;white-space:nowrap;min-width:max-content}
+/* Ряд периодов и интервала длиннее телефона. Перенос давал блок в пол-экрана
+   высотой, поэтому ряд прокручивается по горизонтали, а с 1024 px
+   раскладывается обычным переносом. */
+#period-controls{flex-wrap:nowrap;align-items:center;gap:5px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;padding-bottom:2px;margin-bottom:6px}
+#period-controls::-webkit-scrollbar{display:none}
+#period-controls>*{flex:0 0 auto}
+/* Пять периодов делят ширину карточки на равные доли: ряд заканчивается там же,
+   где заканчивается график, и прокручивать его не нужно. */
+#period-controls button{flex:1 1 0;min-width:0;min-height:38px;padding:6px 6px;font-size:var(--fs-sm)}
+@media(min-width:640px){#period-controls button{padding:7px 12px}}
+@media(min-width:1024px){#period-controls{flex-wrap:wrap;overflow:visible}}
+/* Выбранный период виден и без цвета: рамка и жирность, не только фон. */
+.chart-controls button[aria-pressed=true],.chart-button.active{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+/* #RADEX-121, оператор: кнопки «Графиков» выглядят «не красиво» — активная
+   заливка тонула в плоском фоне карточки, а ряд величин (radon/temp/hum) и
+   ряд пресетов периода стояли слишком плотно, читались одним блоком, хотя
+   это два разных выбора (что показывать / за какой период). Лёгкая тень у
+   активной кнопки прибавляет ей веса без смены палитры; больший отступ между
+   первыми двумя рядами разделяет их зрительно. */
+.chart-controls button[aria-pressed=true],.chart-button.active{box-shadow:0 1px 4px color-mix(in oklab,var(--accent) 55%,transparent)}
+#multi-metrics{margin-bottom:14px}
+/* #RADEX-46: поля дат наследовали input{width:100%} и растягивались на всю
+   строку. Ширина — по содержимому, то есть по дате. */
+.range-date{width:auto;min-width:132px;max-width:170px;min-height:40px;padding:var(--sp-2) 10px;border-radius:8px;flex:0 0 auto}
+@media(min-width:1024px){.range-date{min-height:36px;font-size:var(--fs-sm);min-width:120px}}
+
+.assessment-card{display:flex;align-items:stretch;gap:var(--sp-3)}
+.assessment-card .color-bar{flex:0 0 4px;border-radius:2px;background:var(--dim)}
+.assessment-card .content{flex:1;min-width:0}
+.assessment-card .title{font-size:var(--fs-md);font-weight:700;margin-bottom:2px}
+@media(min-width:640px){.assessment-card .title{font-size:var(--fs-lg)}}
+.assessment-card .text{font-size:var(--fs-md);color:var(--dim);line-height:1.45}
+.assessment-card .meta{font-size:var(--fs-xs);color:var(--dim);margin-top:var(--sp-2)}
+/* Вердикт по рациональному методу красит блок целиком: подложка, полоса и
+   заголовок. Цвет — не единственный признак, текст вердикта стоит рядом. */
+/* --v объявляется на самой карточке: на дочерней полосе он не разрешался в
+   правиле фона, color-mix становился невалидным и обнулял базовый background. */
+.assessment-card.complies,.verdict.complies{--v:var(--ok)}
+.assessment-card.exceeds,.verdict.exceeds{--v:var(--err)}
+.assessment-card.uncertain,.verdict.uncertain{--v:var(--warn)}
+.assessment-card.too_short,.verdict.too_short{--v:var(--dim)}
+.assessment-card .color-bar{background:var(--v,var(--dim))}
+/* #RADEX-107, оператор: «блок нужно подсвечивать в соответствии с методикой».
+   Состояние «измерений недостаточно» — такое же состояние методики, как и три
+   остальных, но фона и заголовка у него не было: блок выглядел выключенным, и
+   отличить «решение не принято» от «блок не работает» было нельзя. Даём ему тот
+   же фон, что и прочим, на своём нейтральном токене: по методике решение здесь
+   ещё НЕ принято, поэтому цвет не должен читаться ни как «норма», ни как
+   «превышение». */
+/* #RADEX-166: доля цвета состояния в заливке поднята с 10 % до 22 %. Оператору
+   был показан макет с четырьмя состояниями сразу, значение 22 % подобрано на нём
+   и принято («оставляй»). Меняется ТОЛЬКО доля подмеса; сам цвет остаётся
+   переменной --v, которую задаёт класс состояния выше — так карточка «Показаний»
+   и .verdict «Соответствия нормативу» не могут разойтись по палитре. */
+.assessment-card.complies,.assessment-card.exceeds,.assessment-card.uncertain,
+.assessment-card.too_short{background:color-mix(in oklab,var(--v) 22%,var(--card))}
+.assessment-card.too_short .title{color:var(--ink)}
+.assessment-card.complies .title{color:var(--ok)}
+.assessment-card.exceeds .title{color:var(--err)}
+.assessment-card.uncertain .title{color:var(--warn)}
+.verdict{border-left-color:var(--v,var(--dim))!important}
+.verdict.complies,.verdict.exceeds,.verdict.uncertain,
+.verdict.too_short{background:color-mix(in oklab,var(--v) 22%,var(--card))}
+.verdict.too_short #verdict_title{color:var(--ink)}
+.verdict.complies #verdict_title{color:var(--ok)}
+.verdict.exceeds #verdict_title{color:var(--err)}
+.verdict.uncertain #verdict_title{color:var(--warn)}
+
+/* Числовые столбцы по центру: край таблицы им не ориентир, а по центру
+   значения стоят одной вертикалью против своих заголовков. */
+.row-value{font-weight:700;white-space:nowrap;text-align:center}
+.row-coverage{text-align:center;font-size:var(--fs-xs);color:var(--dim)}
+#averages th:nth-child(2),#averages th:nth-child(3){text-align:center}
+.row-value.invalid,.row-coverage.invalid{color:var(--dim);font-weight:400}
+
+/* Вкладка «Графики». Ряд управления самый длинный на странице: кнопки, две
+   даты, выбор файлов, переключатель и поле погрешности. На телефоне он идёт
+   столбцом блоками по смыслу, от 640 px — одной строкой с переносом, где
+   кнопки держат свою ширину, а «Очистить» уходит к правому краю: это действие
+   противоположно остальным и не должно стоять с ними вплотную. */
+#multi-content .chart-controls{display:grid;gap:var(--sp-2);align-items:center;margin-bottom:var(--sp-3)}
+#multi-content .chart-controls>button{width:100%}
+#multi-content .chart-controls label{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm);min-height:44px}
+#multi-files{width:100%;max-width:none;min-height:44px;padding:var(--sp-2) 10px;font-size:var(--fs-sm)}
+#multi-files::file-selector-button{margin-right:10px;background:var(--card2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit;font-size:var(--fs-sm);cursor:pointer}
+/* #RADEX-119: #device-uncertainty стал type="hidden" (index.src.html) — правило
+   ширины больше нечего стилизовать, удалено. */
+/* Тулбар укладывается в одну строку: «Очистить» больше не отжимается к правому
+   краю — из-за этого поле СМА уезжало на вторую строку. Элементы сжаты до
+   размера, при котором подписи ещё читаются. */
+@media(min-width:640px){
+  #multi-content .chart-controls{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) 10px}
+  #multi-content .chart-controls>button{flex:0 0 auto;width:auto;min-height:34px;padding:6px 11px;font-size:var(--fs-sm)}
+  #multi-content .chart-controls>span{font-size:var(--fs-xs);color:var(--dim)}
+  #multi-content .chart-controls label{white-space:nowrap;min-height:34px;font-size:var(--fs-xs);gap:6px}
+  #multi-content .range-date{min-width:100px;max-width:112px;min-height:34px;padding:5px 6px;font-size:var(--fs-sm)}
+  #multi-sma{min-width:54px;max-width:62px;min-height:34px;padding:5px 6px;font-size:var(--fs-sm)}
+}
+/* Пустой холст во весь рост читается как дыра в странице: пока рядов нет,
+   график занимает минимум места, а объяснение стоит на виду. */
+#multi-chart{height:260px}
+@media(min-width:640px){#multi-chart{height:320px}}
+/* #RADEX-133, оператор: «на мобильнике график должен оверлеиться на всё
+   окно» — карточка с холстом «Графиков» на узком экране забирала себе
+   отступ .container (var(--pad)) И свой собственный padding (12px), сумма
+   с обеих сторон съедала ~44px из ~390px ширины экрана. Карточка целиком
+   выходит за границы .container (margin компенсирует внешний отступ,
+   border-radius снят по бокам — иначе видимый скос у самого края экрана),
+   собственный padding урезан до минимума (4px) вместо 12, а сам canvas
+   дотягивает эти 4px отрицательным margin — итог: холст = ширина экрана
+   минус вырез (safe-area), без остатка. Только первая карточка вкладки
+   (та, что держит #multi-chart) — остальные карточки вкладки (список
+   замеров, таблица сравнения) НЕ трогаются, их теснота не была в жалобе. */
+@media(max-width:639px){
+  #multi-content>.card:first-child{
+    margin-left:calc(-1*max(var(--pad),var(--safe-left)));
+    margin-right:calc(-1*max(var(--pad),var(--safe-right)));
+    padding-left:calc(max(var(--pad),var(--safe-left)) + 4px);
+    padding-right:calc(max(var(--pad),var(--safe-right)) + 4px);
+    border-radius:0;
+  }
+  #multi-chart{
+    width:calc(100% + 8px);
+    max-width:calc(100% + 8px);
+    margin-left:-4px;
+    margin-right:-4px;
+  }
+}
+#multi-content.is-empty #multi-chart{height:90px}
+/* #RADEX-137: полноэкранный график. Обёртка отдельно от canvas — см. HTML-
+   комментарий у #multi-chart-wrap. Кнопка — угловой значок поверх холста,
+   тот же визуальный язык, что у остальных кнопок страницы (card2/line/ink),
+   не привязана к чувствительности жестов зума (`.multi-fs-btn` вне canvas
+   не ловит wheel/mousedown графика). */
+#multi-chart-wrap{position:relative}
+.multi-fs-btn{position:absolute;top:6px;right:6px;z-index:5;width:32px;height:32px;
+  border:1px solid var(--line);border-radius:8px;background:var(--card2);color:var(--ink);
+  font-size:16px;line-height:1;padding:0;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;opacity:.85}
+.multi-fs-btn:hover,.multi-fs-btn:active{opacity:1;background:var(--line)}
+/* Оверлей на весь viewport. `inset:0` вместо width/height 100% — держит
+   прямоугольник даже при смене адресной строки/клавиатуры на мобильном.
+   env(safe-area-inset-*) — не залезать под чёлку/жест-полосу iOS. */
+#multi-chart-wrap.is-fullscreen{
+  position:fixed;inset:0;z-index:200;
+  display:flex;flex-direction:column;
+  background:var(--bg);
+  padding:calc(10px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right))
+           calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+}
+/* Внутри оверлея canvas растягивается на весь оставшийся флекс — высота
+   больше НЕ фиксированный px из правил выше (max-width:639px/media(min-width:640px)
+   и т.д.), она честно пересчитывается multiRedraw() из getBoundingClientRect()
+   на этом новом размере (тот же путь, что уже отрабатывает у обычного ресайза
+   через ResizeObserver, #RADEX-71/#RADEX-133 — код рисования один и тот же). */
+#multi-chart-wrap.is-fullscreen #multi-chart{
+  flex:1 1 auto;min-height:0;width:100% !important;max-width:100% !important;
+  height:auto !important;margin:0 !important;
+}
+#multi-chart-wrap.is-fullscreen .multi-fs-btn{top:calc(10px + env(safe-area-inset-top));
+  right:calc(10px + env(safe-area-inset-right));width:40px;height:40px;font-size:20px;opacity:1}
+/* Блокируем скролл страницы под оверлеем — иначе на мобильном свайп внутри
+   графика заодно листает саму страницу под ним. */
+body.multi-fs-lock{overflow:hidden}
+/* #RADEX-123: hover-подсказка курсора — HTML-оверлей поверх canvas, позиция
+   выставляется из JS (multiShowTooltip). pointer-events:none — подсказка не
+   должна перехватывать mousemove у самого canvas под ней. */
+/* #RADEX-155, оператор: «в оверлее не отображается значение ОА». ПРИЧИНА (не
+   правка наугад): подсказка — отдельный элемент, приклеенный к document.body
+   (multiShowTooltip), то есть сосед полноэкранного оверлея в КОРНЕВОМ
+   контексте наложения, а не его потомок. У оверлея
+   `#multi-chart-wrap.is-fullscreen` z-index:200 и НЕПРОЗРАЧНЫЙ фон
+   background:var(--bg) — при z-index:60 подсказка рисовалась ПОД ним и была
+   закрыта этим фоном. Отсюда и наблюдавшаяся картина: crosshair (он рисуется
+   ПО canvas, внутри оверлея) виден, а подсказка нет. Поднимаем выше оверлея. */
+.multi-tooltip{position:fixed;z-index:300;display:none;pointer-events:none;
+  background:rgba(2,6,23,.92);border:1px solid var(--line);border-radius:8px;
+  padding:6px 10px;font-size:var(--fs-xs);color:var(--ink);
+  box-shadow:0 4px 12px rgba(0,0,0,.35);max-width:min(80vw,320px)}
+.multi-tooltip .mt-row{display:flex;align-items:center;gap:6px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.multi-tooltip .mt-row+.mt-row{margin-top:2px}
+.multi-tooltip .mt-sw{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+/* Альбом: экран 844×390, главный объект — график. Боковая панель ему только
+   мешала: узкие кнопки в столбец выходили выше холста, и вкладку приходилось
+   листать. Всё управление укладывается в один ряд-тулбар высотой 30 px над
+   графиком, а холсту остаются вся ширина и почти вся высота экрана. */
+@media(max-height:520px){
+  #multi-content>.card{padding:8px 10px}
+  #multi-content .chart-controls{display:flex;flex-wrap:wrap;align-items:center;gap:5px 6px;margin:0 0 6px}
+  #multi-content .chart-controls>button,#multi-content .chart-controls>label{width:auto;min-height:30px;padding:4px 8px;font-size:11px}
+  #multi-content .range-date{width:auto;min-width:96px;max-width:112px;min-height:30px;padding:4px 6px;font-size:11px}
+  #multi-content .chart-controls>span{font-size:11px}
+  #multi-sma{min-width:50px;max-width:58px;min-height:30px;padding:4px 6px;font-size:11px}
+  #multi-chart{height:250px}
+  #multi-legend{margin-top:4px}
+  #multi-legend label{min-height:22px}
+  #multi-hint{margin-top:2px}
+  #multi-stats{margin-top:var(--sp-2)}
+}
+#multi-legend{display:flex;flex-wrap:wrap;gap:var(--sp-3);margin-top:var(--sp-2)}
+#multi-legend label{display:inline-flex;align-items:center;gap:var(--sp-1);min-height:32px}
+#multi-legend input{width:auto;min-height:0}
+#multi-legend p{margin:0}
+/* Таблица сравнения рядов: на телефоне прокручивается сама, а не растягивает
+   страницу; шире — занимает всю ширину, иначе четыре столбца жались к левому
+   краю посреди пустого места. */
+#multi-stats{display:block;width:100%;margin-top:var(--sp-3);overflow-x:auto}
+@media(min-width:640px){#multi-stats{display:table;overflow:visible}}
+#multi-stats td:nth-child(2),#multi-stats td:nth-child(3),#multi-stats td:nth-child(4),
+#multi-stats th:nth-child(2),#multi-stats th:nth-child(3),#multi-stats th:nth-child(4){text-align:center}
+#multi-hint{margin-top:6px;font-size:var(--fs-xs)}
+@media(pointer:coarse){#multi-hint{display:none}}
+@media(max-width:639px),(max-height:520px){
+  #multi-files,#multi-content .chart-controls>span:nth-of-type(2){display:none}
+}
+
+.scan-card{text-align:center}
+.scan-list{display:grid;gap:var(--sp-2);margin-top:var(--sp-3)}
+.scan-item{background:var(--card2);border-radius:8px;padding:var(--sp-3);min-height:56px;text-align:left;cursor:pointer}
+.scan-item:hover,.scan-item:active{background:var(--line)}
+.scan-item-name{font-weight:700;margin-bottom:2px}
+.scan-item-mac,.scan-item-rssi{font-size:var(--fs-xs);color:var(--dim)}
+.scan-item-rssi{margin-top:var(--sp-1)}
+.scan-placeholder{color:var(--dim);font-style:italic}
+@media(min-width:640px){.scan-list{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}}

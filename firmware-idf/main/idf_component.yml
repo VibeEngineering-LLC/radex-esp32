@@ -1,0 +1,8 @@
+dependencies:
+  espressif/mdns: "^1.2.0"
+  # В ESP-IDF 6.x mqtt_client и cJSON вынесены из ядра в реестр компонентов:
+  # сборка на v6.1 падала с «mqtt_client.h: No such file or directory» и
+  # «cJSON.h: No such file or directory». Для веток 5.x эти строки не нужны —
+  # там компоненты в ядре, поэтому файл различается у площадок сборки.
+  espressif/mqtt: "*"
+  espressif/cjson: "*"

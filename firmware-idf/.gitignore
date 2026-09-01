@@ -1,0 +1,7 @@
+# Сгенерировано idf.py — машинно-специфично, не публикуется.
+build/
+sdkconfig
+sdkconfig.old
+# Реальные WiFi-креды — см. main/secrets_local.h.example
+main/secrets_local.h
+*.log

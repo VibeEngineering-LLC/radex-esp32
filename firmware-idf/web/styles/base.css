@@ -1,0 +1,286 @@
+/* База веб-интерфейса шлюзов ESP32: токены, тема, типографика, карточки,
+   кнопки, поля, вкладки, сетки. Мобильные размеры — базовые, медиазапросы
+   только вверх. Специфика прибора — в соседнем файле, подключается ПОСЛЕ. */
+
+/* ── Токены. Единый источник значений для страницы И для графика ──────────
+   Типографическая шкала 12/13/14/16/20/26, шаг отступов кратен 4.
+   Цвета данных читает код рисования через getComputedStyle, поэтому тема
+   и график не могут разойтись. */
+:root{
+  --fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:20px;--fs-2xl:26px;
+  --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-6:24px;
+  --radius:10px;
+  --bg:#020617;--card:#0F172A;--card2:#1E293B;--ink:#F8FAFC;--dim:#94A3B8;
+  --line:#334155;--ok:#22C55E;--warn:#F59E0B;--err:#EF4444;--accent:#2563EB;
+  --data-line:#22C55E;--data-band:#22C55E;--data-limit:#F87171;
+  --data-grid:#334155;--data-axis:#94A3B8;--data-mean:#60A5FA;
+  /* #RADEX-126: свой цвет среднего ТОЛЬКО для «Показаний» (линия/бейдж/
+     легенда/индикатор НРБ) — «Графики» остаются на --data-mean (эталон
+     #RADEX-124/125, не трогать). Фиолетовый — уже в палитре многосерийных
+     линий «Графиков» (COLORS[4]='#A78BFA' в index.src.html), не новый оттенок. */
+  --data-mean-alt:#A78BFA;
+  --pad:10px;
+  --safe-top:env(safe-area-inset-top);
+  --safe-bottom:env(safe-area-inset-bottom);
+  --safe-left:env(safe-area-inset-left);
+  --safe-right:env(safe-area-inset-right);
+  color-scheme:dark
+}
+@media(min-width:640px){:root{--pad:var(--sp-4)}}
+@media(min-width:1024px){:root{--pad:var(--sp-6)}}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--bg);color:var(--ink);font:400 15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums;overflow-wrap:break-word;text-wrap:pretty}
+img,canvas,svg{display:block;max-width:100%}
+a{color:var(--ok);text-decoration:none}
+a:hover{color:var(--ink);text-decoration:underline}
+:focus-visible{outline:2px solid var(--ok);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+/* Челка и скруглённые углы: страница занимает весь экран (viewport-fit=cover),
+   поэтому боковые отступы берутся не меньше вырезов, а сверху добавляется
+   высота самой челки — иначе первая карточка уезжает под неё. */
+.container{max-width:1200px;margin:0 auto;padding:calc(var(--pad) + var(--safe-top)) max(var(--pad),var(--safe-right)) calc(var(--sp-6) + var(--safe-bottom)) max(var(--pad),var(--safe-left))}
+.container ul:not(.tabs){padding-left:18px;margin-bottom:var(--sp-2)}
+.container li{line-height:1.6}
+
+/* Вкладки. На узком экране их пять и подписи длинные: вместо сжатия в
+   нечитаемые обрубки — ряд с горизонтальной прокруткой и затуханием у правого
+   края как подсказкой. От 1024 px ряд помещается целиком и делится на доли. */
+.tab-container{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--line);margin:calc(-1*(var(--pad) + var(--safe-top))) calc(-1*var(--pad)) var(--pad);padding-top:var(--safe-top)}
+.tabs{display:flex;gap:2px;list-style:none;padding:0 var(--pad);overflow-x:auto;overscroll-behavior-x:contain;scroll-snap-type:x proximity;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:0 0 auto;display:flex;align-items:center;justify-content:center;scroll-snap-align:center;min-height:48px;padding:var(--sp-3) var(--sp-3);white-space:nowrap;font-size:var(--fs-md);font-weight:500;color:var(--dim);border-bottom:2px solid transparent;cursor:pointer;transition:color .2s;-webkit-tap-highlight-color:transparent}
+.tab[aria-selected=true]{color:var(--ink);border-bottom-color:var(--ok)}
+.tab:active{color:var(--ink)}
+@media(max-width:1023px){.tabs{-webkit-mask-image:linear-gradient(90deg,#000 0 calc(100% - 22px),transparent);mask-image:linear-gradient(90deg,#000 0 calc(100% - 22px),transparent)}}
+@media(min-width:1024px){.tabs{overflow:visible}.tab{flex:1 1 0}}
+/* Подписи вкладок в двух вариантах: полная на широком экране, короткая на
+   телефоне. Короткие подобраны так, чтобы влезать в пятую часть экрана
+   шириной 320 px — на длинных подписях крайние буквы срезались. */
+.t-short{display:none}
+
+/* Телефон: ряд вкладок уезжает вниз, к большому пальцу. Пять коротких подписей
+   делят ширину на равные доли, активная помечается плашкой — так состояние
+   читается и без цвета, и по форме. Контент получает отступ снизу, чтобы не
+   уходить под панель. */
+@media(max-width:639px){
+  .t-long{display:none}
+  .t-short{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tab-container{position:fixed;top:auto;bottom:0;left:0;right:0;margin:0;padding-top:0;border-bottom:none;border-top:1px solid var(--line);background:var(--bg)}
+  .tabs{gap:2px;overflow:visible;padding:6px max(var(--sp-2),var(--safe-left)) calc(6px + var(--safe-bottom)) max(var(--sp-2),var(--safe-right));-webkit-mask-image:none;mask-image:none}
+  .tab{flex:1 1 0;min-width:0;min-height:44px;padding:6px 3px;border:none;border-radius:8px;font-size:11px;font-weight:500;letter-spacing:.01em;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .2s,color .2s}
+  .tab[aria-selected=true]{color:var(--ok);background:var(--card2)}
+  /* Верхний отступ на телефоне — не меньше 14 px, а при вырезе равен его
+     высоте: первая карточка не должна заезжать под челку и часы. */
+  .container{padding-top:max(14px,var(--safe-top));padding-bottom:calc(64px + var(--safe-bottom))}
+}
+/* Альбомная ориентация нужна одной вкладке — «Графики»: там разбор длинного
+   ряда, и ширина важнее высоты. Поэтому по низкому экрану сжимается только она
+   и общая обвязка (ряд вкладок, поля страницы); остальные вкладки остаются
+   такими же, какими были в портрете. */
+@media(max-height:520px){
+  .container{padding-top:max(8px,var(--safe-top));padding-bottom:calc(14px + var(--safe-bottom))}
+  .tab{min-height:38px;padding:8px var(--sp-3)}
+  #multi-content .card,#multi-content .chart-container{padding:8px 10px;margin-bottom:6px}
+  #multi-content .section-title{font-size:var(--fs-md);margin:var(--sp-2) 0 var(--sp-1)}
+}
+
+.tab-content{display:none}
+.tab-content[aria-hidden=false]{display:block}
+
+.card,.card-orig,.chart-container,.assessment-card,.scan-card{background:var(--card);border-radius:var(--radius);padding:10px 12px;margin-bottom:6px}
+@media(min-width:640px){.card,.card-orig,.chart-container,.assessment-card,.scan-card{padding:var(--sp-4)}}
+/* Первый элемент карточки не добавляет свой верхний отступ к её padding —
+   иначе над заголовком остаётся двойной провал. */
+.card>*:first-child,.chart-container>*:first-child{margin-top:0}
+.card-title{font-size:var(--fs-xs);color:var(--dim);margin-bottom:var(--sp-1)}
+.card-value{display:inline;font-size:var(--fs-xl);font-weight:700;line-height:1.2}
+.card-value.large{font-size:var(--fs-2xl)}
+.sub{color:var(--dim);font-size:var(--fs-sm)}
+
+.status-bar{display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-3)}
+.status-dot{flex:0 0 auto;width:10px;height:10px;border-radius:50%;background:var(--dim)}
+.status-dot.connected{background:var(--ok)}
+.status-dot.warning{background:var(--warn)}
+.status-dot.error{background:var(--err)}
+.status-text{font-size:var(--fs-xs);color:var(--dim);line-height:1.4}
+
+/* Показания: ОА текущая и расчётная в ряд, климат — общим блоком.
+   На телефоне два столбца, климат во всю ширину под ними. */
+.grid{display:grid;gap:6px;margin-bottom:6px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.grid .card{margin-bottom:0;min-width:0}
+.card-climate{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px;align-content:start}
+/* Состояние опроса живёт в одном блоке с климатом: это тоже «как сейчас», а не
+   результат измерения. Полоса занимает всю ширину карточки под значениями. */
+.card-climate .status-bar{grid-column:1/-1;margin:0;padding-top:8px;border-top:1px solid var(--line);align-items:flex-start}
+.card-climate .status-dot{margin-top:5px}
+.status-short{display:none;font-size:11px;color:var(--dim);white-space:nowrap}
+/* Телефон: индикатор опроса встаёт третьей колонкой в ряд с температурой и
+   влажностью — цвет точки и «сколько минут назад» отвечают на вопрос «данные
+   свежие?», а полная формулировка на первом экране только занимает две строки. */
+@media(max-width:639px){
+  .card-climate{grid-template-columns:1fr 1fr auto;align-items:end}
+  .card-climate .status-bar{grid-column:auto;padding-top:0;border-top:none;align-items:center;align-self:center;gap:6px}
+  .card-climate .status-dot{margin-top:0}
+  .card-climate .status-text{display:none}
+  .card-climate .status-short{display:block}
+}
+@media(min-width:640px){.grid .card-climate{grid-column:span 2}}
+.card-climate .card-value{font-size:var(--fs-xl)}
+@media(max-width:639px){.grid{grid-template-columns:repeat(2,1fr)}.grid .card-climate{grid-column:1/-1}.grid .card-title{min-height:2.6em}.card-climate .card-title{min-height:0}}
+
+/* График и шкала уровней в одной строке: шкала — узкий столбец справа,
+   ей отдаётся ровно та ширина, что нужна подписям. */
+.chart-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:stretch}
+/* #RADEX-156: вертикальные отступы НЕ задаются здесь — их выставляет
+   updateLevels() из CHART_PAD, теми же числами, какими drawChart() рисует поле
+   графика. Прежний фиксированный padding-bottom:26px не совпадал с реальным
+   нижним полем (20px), а верхнего отступа не было вовсе — шкала не сходилась
+   с областью построения ни сверху, ни снизу. */
+.levels{display:grid;grid-template-columns:12px auto;gap:5px}
+.levels-bar{position:relative;border-radius:6px;background:linear-gradient(to top,var(--ok) 0,var(--ok) var(--green,50%),var(--warn) var(--green,50%),var(--warn) var(--yellow,77%),var(--err) var(--yellow,77%),var(--err) 100%)}
+/* Текущее и среднее почти всегда близки, и одна полоска накрывала другую.
+   Делим ширину: текущее — правая половина, среднее — левая. */
+.levels-now,.levels-mean{position:absolute;height:0}
+.levels-now{left:45%;right:-4px;border-top:3px solid var(--ink);box-shadow:0 0 0 1px rgba(2,6,23,.7)}
+/* #RADEX-126: индикатор только на «Показаниях» — цвет вслед за
+   --data-mean-alt, не за общим --data-mean (тот остаётся у «Графиков»). */
+.levels-mean{left:-4px;right:45%;border-top:3px solid var(--data-mean-alt);box-shadow:0 0 0 1px rgba(2,6,23,.7)}
+.levels-scale{position:relative;display:flex;flex-direction:column;justify-content:space-between;font-size:10px;color:var(--dim);white-space:nowrap}
+#levels-norm,#levels-green{position:absolute;left:0}
+#levels-green{color:var(--ok)}
+@media(min-width:640px){.levels{grid-template-columns:14px auto}}
+
+canvas{width:100%;height:170px}
+@media(min-width:640px){canvas{height:240px}}
+@media(min-width:1024px){canvas{height:300px}}
+
+/* 44 px — минимальная цель нажатия пальцем; мышью хватает 36. */
+button,.btn-download{font:inherit;font-size:var(--fs-md);background:var(--card2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:9px 14px;min-height:44px;cursor:pointer;transition:background .2s;-webkit-tap-highlight-color:transparent}
+.btn-download{display:inline-flex;align-items:center;text-decoration:none}
+@media(pointer:fine){button,.btn-download{min-height:36px;padding:7px 13px}#period-controls button,.range-date{min-height:32px}}
+button:hover,.btn-download:hover{background:var(--line);text-decoration:none}
+button:active{background:var(--line);border-color:var(--ok);transform:translateY(1px)}
+@media(prefers-reduced-motion:reduce){button:active{transform:none}}
+/* Пока команда выполняется, кнопка помечается и не принимает повторных
+   нажатий: иначе замер можно перезапустить двойным касанием. */
+button.busy{opacity:.6;pointer-events:none;border-color:var(--ok)}
+/* Кнопка, подтверждающая форму, — единственное действие в блоке: отделяется
+   отступом от последнего поля и красится акцентом, чтобы её не искали. */
+form button[type=submit]{margin-top:var(--sp-3);background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+form button[type=submit]:hover{background:var(--accent);filter:brightness(1.12)}
+form button[type=submit]:active{filter:brightness(.95)}
+
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn-primary:hover{background:var(--accent);filter:brightness(1.12)}
+.btn-primary:active{filter:brightness(.95)}
+.btn-danger{color:var(--err);border-color:var(--err)}
+.btn-danger:hover{background:var(--card2);border-color:var(--err);color:var(--err)}
+
+/* Идущий замер виден и без чтения текста: точка пульсирует, пока прибор
+   набирает данные. Цвет не единственный признак — рядом стоит сама надпись. */
+.test-state{display:flex;align-items:center;gap:var(--sp-2);margin:var(--sp-4) 0 var(--sp-3);font-size:var(--fs-md);font-weight:600}
+.test-state.running::before{content:"";flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 var(--ok);animation:test-pulse 2s ease-out infinite}
+@keyframes test-pulse{
+  0%{box-shadow:0 0 0 0 rgba(34,197,94,.55)}
+  70%{box-shadow:0 0 0 7px rgba(34,197,94,0)}
+  100%{box-shadow:0 0 0 0 rgba(34,197,94,0)}
+}
+@media(prefers-reduced-motion:reduce){.test-state.running::before{animation:none}}
+
+.btn-group{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-bottom:var(--sp-3)}
+.btn-group button{flex:1 1 auto;min-width:120px}
+.btn-full-width{width:100%}
+
+/* Титул вкладки: имя методики стояло мелкой строкой в середине карточки, где
+   читалось как подпись к соседнему блоку. */
+.page-title{font-size:var(--fs-xl);font-weight:600;line-height:1.25;margin:2px 0 var(--sp-3)}
+@media(min-width:640px){.page-title{font-size:var(--fs-2xl);margin-bottom:var(--sp-4)}}
+
+.section-title{font-size:var(--fs-lg);font-weight:600;margin:var(--sp-4) 0 var(--sp-2)}
+@media(min-width:640px){.section-title{font-size:var(--fs-xl);margin:var(--sp-6) 0 var(--sp-3)}}
+h2{font-size:var(--fs-lg);font-weight:600}
+
+/* Вкладка метода: от 900 px — две колонки. #RADEX-165: слева вся рабочая часть
+   (заключение, состояние замера, кнопки, оценка интервала, параметры оценки),
+   справа только справочный текст методики. Свёрнутые примечания остались одни —
+   «О методике и источники». */
+.method-cols{display:grid;gap:var(--sp-3);align-items:start}
+@media(min-width:900px){.method-cols{grid-template-columns:1.05fr 1fr;gap:var(--sp-4)}}
+.method-params{margin-bottom:0}
+.method-params .section-title{margin-top:0}
+.method-params .form-group input,.method-params .form-group select{max-width:none}
+.btn-row{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+details.note{margin-top:6px}
+details.note summary{cursor:pointer;font-size:12px;color:var(--dim);text-decoration:underline;text-decoration-style:dotted;list-style:none;-webkit-tap-highlight-color:transparent}
+details.note summary::-webkit-details-marker{display:none}
+details.note summary::before{content:"› ";color:var(--dim)}
+details.note[open] summary::before{content:"⌄ "}
+details.note summary:hover{color:var(--ink)}
+/* #RADEX-151: несворачиваемый заголовок пояснения — без маркера «›» и без
+   пунктирного подчёркивания: они означали «нажми, чтобы раскрыть», а раскрывать
+   больше нечего — текст показан всегда.
+   #RADEX-165: вес поднят с 12 px/приглушённый (вес подписи, унаследованный от
+   <summary>) до 14 px/600/основной цвет. Причина: после раскрытия блоков методики
+   таких заголовков на вкладке стало три, и приглушённая подпись перестала читаться
+   как граница раздела — подзаголовок обязан быть заметно тяжелее собственного
+   текста. Уровень ровно один: .section-title (16/20 px) — раздел, .note-head
+   (14 px) — подраздел внутри карточки, .sub — текст. Класс намеренно ОДИН на всю
+   страницу: «Откуда берётся число», «Расположение места измерения», «Ограничения»
+   выглядят одинаково, потому что это один и тот же уровень. */
+div.note{margin-top:var(--sp-4)}
+div.note>.note-head{font-size:var(--fs-md);font-weight:600;color:var(--ink);margin-bottom:var(--sp-1)}
+.method-refs{margin-top:var(--sp-4)}
+
+/* #RADEX-165, правая колонка — справочный текст методики. Длина строки: колонка
+   на десктопе ~550 px, при 12 px это ~88 знаков в строке — вдвое выше комфортного.
+   64ch (~62 знака на кириллице) держит строку в рекомендованном коридоре 60–75
+   знаков (ui-ux-pro-max, line-length-control) и на телефоне ни на что не влияет:
+   там ширина экрана меньше и ограничение не срабатывает. Вертикальный ритм задан
+   правилами, а не инлайновыми margin-top у каждого абзаца — иначе отступы
+   расходятся при любой правке текста. */
+.method-ref{margin-bottom:0}
+.method-ref .section-title{margin-top:0}
+/* font-size у ol/ul задан ЯВНО, а не унаследован от li: единица ch считается от
+   шрифта САМОГО элемента, и у списка без этой строки 64ch мерились по 15 px тела
+   страницы — строки списка выходили на ~110 px правее абзацев, край текста
+   рвался. Поймано на живой плате скриншотом, а не рассуждением. */
+/* Цвет пунктов списка задан ЯВНО тем же --dim, что у .sub: без этой строки li
+   наследовал --ink от карточки, и в одной колонке соседствовали белый список и
+   приглушённые абзацы — «основной текст одного цвета» ломался ровно на границе
+   абзац/список. Замечено по скриншоту живой платы (12 px ink против 12 px dim). */
+.method-ref .sub,.method-ref li,.method-ref ol,.method-ref ul{font-size:var(--fs-xs);line-height:1.6;color:var(--dim)}
+.method-ref .sub,.method-ref ol,.method-ref ul{max-width:64ch}
+.method-ref .sub+.sub{margin-top:var(--sp-2)}
+.method-ref ol{padding-left:20px;margin-top:var(--sp-2)}
+.method-ref ol>li+li{margin-top:var(--sp-2)}
+.method-ref ul{margin-top:var(--sp-1)}
+
+.form-group{margin-bottom:var(--sp-3)}
+label{display:block;margin-bottom:var(--sp-1);font-size:var(--fs-sm);color:var(--dim)}
+/* 16 px в полях обязательны: при меньшем размере Safari на iPhone
+   масштабирует страницу при фокусе и обратно уже не возвращает. */
+input,select{width:100%;min-height:44px;padding:11px var(--sp-3);background:var(--card2);color:var(--ink);border:1px solid var(--line);border-radius:8px;font:inherit;font-size:var(--fs-lg)}
+select{appearance:none;text-overflow:ellipsis;padding-right:34px;background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);background-position:calc(100% - 19px) 52%,calc(100% - 14px) 52%;background-size:5px 5px;background-repeat:no-repeat}
+input[type=checkbox]{width:auto;min-height:0;accent-color:var(--ok)}
+/* Адрес брокера или пароль короче любой разумной строки: поле во всю ширину
+   экрана только труднее читать. */
+.form-group input,.form-group select{max-width:420px}
+
+/* Параметры оценки: короткие поля с длинными пояснениями — в ряд они видны
+   целиком, колонкой занимали несколько экранов. */
+.assess-grid{display:grid;gap:var(--sp-3) 18px;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));align-items:start}
+.assess-grid .form-group{margin-bottom:0}
+.assess-grid input,.assess-grid select{max-width:none}
+.assess-grid .sub{line-height:1.4}
+@media(min-width:1024px){.assess-grid input,.assess-grid select{padding:9px 10px;min-height:40px;font-size:var(--fs-md)}}
+
+table{width:100%;border-collapse:collapse;margin-bottom:var(--sp-3)}
+th,td{text-align:left;padding:var(--sp-2) 6px;font-size:var(--fs-sm);border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:400;font-size:var(--fs-xs);color:var(--dim)}
+td:first-child{white-space:nowrap}
+@media(min-width:640px){th,td{padding:9px var(--sp-3);font-size:var(--fs-md)}}
+
+.log-container{background:var(--card2);border-radius:8px;padding:var(--sp-3);margin-top:var(--sp-3);font:var(--fs-xs)/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:min(50dvh,420px);overflow:auto;-webkit-overflow-scrolling:touch}

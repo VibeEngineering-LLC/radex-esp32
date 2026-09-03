@@ -29,6 +29,13 @@ bool ble_radex_has_target(void);
 bool ble_radex_scanning(void);
 int  ble_radex_found_json(char *buf, size_t len);
 bool ble_radex_set_target(const char *mac_str);   // "AA:BB:CC:DD:EE:FF"
+// #RADEX-188: адрес выбранного прибора строкой для Web UI. Пишет в buf
+// "AA:BB:CC:DD:EE:FF" и возвращает true; если прибор не выбран — false.
+bool ble_radex_target_mac(char *buf, size_t len);
+// #RADEX-190: забыть выбранный прибор и снова начать поиск в эфире. Нужно,
+// когда плата сама привязалась к чужому Radex по соседству: скан идёт ТОЛЬКО
+// пока прибор не выбран, поэтому без сброса свой прибор в списке не появится.
+void ble_radex_clear_target(void);
 
 // Счётчики для диагностики.
 bool     ble_radex_connected(void);

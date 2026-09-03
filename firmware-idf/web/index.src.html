@@ -453,6 +453,14 @@
     <div id="system-content" class="tab-content" aria-hidden="true">
       <h2 class="section-title">Диагностика</h2>
       <div class="diag-grid">
+      <!-- #RADEX-188, оператор: «в системных нужно мак прибора показывать». Плата ищет
+           прибор в эфире сама, и без адреса на странице нельзя было понять, свой прибор
+           опрашивается или чужой Radex по соседству. -->
+      <div class="card">
+        <div class="card-title">Прибор (MAC)</div>
+        <div class="card-value" id="dev-mac" style="font-size:var(--fs-md)">—</div>
+        <div class="sub" style="font-size:var(--fs-xs)">адрес прибора, с которого идут показания</div>
+      </div>
       <div class="card">
         <div class="card-title">Прочитано с прибора</div>
         <div class="card-value" id="samples">—</div>
@@ -691,6 +699,13 @@
       <div class="scan-card">
         <h2>Выберите прибор</h2>
         <div class="scan-list" id="scan-list"></div>
+        <!-- #RADEX-190, оператор: «нужный прибор не видит». Плата ищет приборы в эфире
+             ТОЛЬКО пока ни один не выбран. Если она привязалась к чужому Radex по
+             соседству, свой без сброса привязки в списке не появится. -->
+        <button id="btn-rescan-dev" onclick="forgetDevice()"
+                style="margin-top:12px">Искать приборы заново</button>
+        <div class="sub" style="font-size:var(--fs-xs);margin-top:6px">
+          сбрасывает выбранный прибор и запускает поиск в эфире заново</div>
       </div>
     </div>
   </div>
@@ -867,6 +882,12 @@
         data = dataRes;
         window.__dataFetchedAt = Date.now();   /* #RADEX-153: момент ответа, не запроса */
         system = systemRes;
+        /* #RADEX-188: адрес прибора из /api/system (поле dev_mac). Пустая строка —
+           прибор ещё не выбран, показываем прочерк, а не пустую карточку. */
+        {
+          const mel = document.getElementById('dev-mac');
+          if (mel) mel.textContent = (systemRes && systemRes.dev_mac) ? systemRes.dev_mac : '—';
+        }
         // history НЕ перетираем ответом /api/history: график берёт данные
         // с флеш через /api/history/range, у него свой период и свой объём.
         stats = statsRes;
@@ -1150,6 +1171,19 @@
       } else {
         scanList.innerHTML = '<div class="scan-placeholder">идёт поиск приборов…</div>';
       }
+    }
+
+    // #RADEX-190: забыть текущий прибор и снова начать поиск. Без этого выбранная
+    // однажды привязка (в т.ч. к чужому прибору) не снималась ничем, кроме стирания NVS.
+    function forgetDevice() {
+      if (!confirm('Забыть выбранный прибор и начать поиск заново?')) return;
+      fetch('/api/target/clear', { method: 'POST' })
+        .then(() => {
+          const list = document.getElementById('scan-list');
+          if (list) list.innerHTML = '<div class="scan-placeholder">идёт поиск приборов…</div>';
+          setTimeout(updateAllData, 3000);
+        })
+        .catch(() => alert('Не удалось сбросить привязку'));
     }
 
     function selectDevice(mac) {

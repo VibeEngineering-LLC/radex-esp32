@@ -2,7 +2,7 @@
 <html lang="ru"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AtomSpectra WiFi Setup</title>
+<title>Шлюз Radex MR107ion</title>
 <style>
 :root{--accent:#34d3c0;--accent-dim:rgba(52,211,192,.12);--bg:#0a0c0a;--panel:#11150f;--bd:#20281e;--dim:#8a9686;--txt:#cfd6cd;}
 body{font-family:ui-monospace,'SF Mono','Cascadia Mono','DejaVu Sans Mono',Consolas,monospace;background:var(--bg);color:var(--txt);margin:0;padding:20px;max-width:420px;margin:0 auto}
@@ -17,6 +17,12 @@ input:focus{border-color:var(--accent)}
 button{width:100%;padding:12px;background:var(--accent);color:#0c1206;border:none;border-radius:7px;font-size:17px;font-weight:700;cursor:pointer;margin-top:12px;font-family:inherit}
 button:hover{filter:brightness(1.1)}
 button:disabled{background:#2a322a;color:#5b655a;cursor:not-allowed}
+/* #RADEX-189, оператор: «фиолетовая надпись не видна». Ссылка на страницу платы
+   рисовалась браузерным #0000EE/фиолетовым посещённым — на тёмном фоне нечитаемо.
+   Делаем её акцентной кнопкоподобной, одинаковой в обоих состояниях. */
+#st a,#st a:visited{display:inline-block;margin:8px 0;padding:10px 14px;background:var(--accent);color:#0c1206;border-radius:7px;font-weight:700;text-decoration:none}
+#st a:active{opacity:.85}
+#st small{color:var(--dim);display:block;margin-top:6px;line-height:1.4}
 #st{text-align:center;padding:10px;margin-top:10px;min-height:20px;font-size:13px}
 .ok{color:var(--accent)}.err{color:#ff8a82}
 #rescan{width:auto;padding:8px 16px;font-size:13px;background:var(--accent-dim);color:var(--accent);border:1px solid rgba(52,211,192,.4);margin:8px 0;font-weight:600}
@@ -26,7 +32,7 @@ button:disabled{background:#2a322a;color:#5b655a;cursor:not-allowed}
 </head>
 <body>
 <button id="langBtn">EN</button>
-<h1>AtomSpectra WiFi Setup</h1>
+<h1>Шлюз Radex MR107ion</h1>
 <div class="nets" id="nets" data-i18n="scan.progress">Сканирование сетей...</div>
 <button id="rescan" onclick="scan()" data-i18n="btn.rescan">Пересканировать</button>
 <input id="ssid" data-i18n-placeholder="ph.ssid" placeholder="WiFi-сеть (SSID)">
@@ -52,10 +58,16 @@ var DICT={
   "err.ssid":"Введите SSID",
   "saving":"Сохранение...",
   "saved":"Сохранено! Перезагрузка в режим STA...",
+  "probe.connecting":"Подключаюсь к сети, подождите...",
+  "probe.ok":"Готово! Плата в сети, её адрес:",
+  "probe.open":"Открыть страницу платы",
+  "probe.note":"Перейдите в свою домашнюю сеть и откройте ссылку. Плата сама перезагрузится через 20 секунд.",
+  "probe.fail":"Не удалось подключиться — проверьте пароль и повторите.",
+  "probe.timeout":"Плата не ответила. Вернитесь в свою сеть и поищите её по адресу http://radex-gw.local/",
   "rebooting":"Устройство перезагружается, подключитесь к своей WiFi-сети",
   "field.or":"— или без роутера —",
   "btn.field":"Полевой режим (Outdoor)",
-  "field.confirm":"Запустить полевой AP без роутера? Плата перезагрузится и создаст точку доступа AtomSpectra-Outdoor (пароль atomspectra).",
+  "field.confirm":"Запустить полевой AP без роутера? Плата перезагрузится и создаст точку доступа RadexGW-Outdoor (пароль radex-gw).",
   "field.starting":"Запуск полевого режима, перезагрузка..."
  },
  en:{
@@ -70,11 +82,17 @@ var DICT={
   "secured":"secured",
   "err.ssid":"Enter SSID",
   "saving":"Saving...",
+  "probe.connecting":"Connecting to the network, please wait...",
+  "probe.ok":"Done! The board is online at:",
+  "probe.open":"Open the board page",
+  "probe.note":"Switch back to your home network and open the link. The board reboots in 20 seconds.",
+  "probe.fail":"Could not connect - check the password and try again.",
+  "probe.timeout":"No answer from the board. Rejoin your network and try http://radex-gw.local/",
   "saved":"Saved! Rebooting in STA mode...",
   "rebooting":"Device rebooting, connect to your WiFi network",
   "field.or":"— or without a router —",
   "btn.field":"Field mode (Outdoor)",
-  "field.confirm":"Start field AP without a router? The board will reboot and create the AtomSpectra-Outdoor access point (password atomspectra).",
+  "field.confirm":"Start field AP without a router? The board will reboot and create the RadexGW-Outdoor access point (password radex-gw).",
   "field.starting":"Starting field mode, rebooting..."
  }
 };
@@ -130,14 +148,39 @@ function doConnect(){
     fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({ssid:s,pass:p})})
     .then(function(r){return r.json()}).then(function(){
-        st.textContent=t("saved");
+        st.textContent=t("probe.connecting");
+        pollStatus(0);
     }).catch(function(){
         st.className='ok';st.textContent=t("rebooting");
     });
 }
+// #RADEX-187: плата пробует подключиться, пока точка доступа ещё жива, и сообщает
+// реальный адрес. Опрашиваем её раз в секунду. Связь может оборваться сама (AP и STA
+// делят один канал: если домашняя сеть на другом, точка доступа переедет) — поэтому
+// по таймауту показываем запасную инструкцию, а не висим молча.
+function pollStatus(n){
+    var st=document.getElementById('st');
+    if(n>30){st.className='ok';st.textContent=t("probe.timeout");return;}
+    fetch('/api/status').then(function(r){return r.json()}).then(function(d){
+        if(d.state==="ok"){
+            st.className='ok';
+            st.innerHTML=t("probe.ok")+' <b>'+d.ip+'</b><br>'+
+                '<a href="'+d.url+'">'+t("probe.open")+'</a><br><small>'+t("probe.note")+'</small>';
+            return;
+        }
+        if(d.state==="fail"){
+            st.className='err';st.textContent=t("probe.fail");
+            document.getElementById('btn').disabled=false;
+            return;
+        }
+        setTimeout(function(){pollStatus(n+1)},1000);
+    }).catch(function(){
+        setTimeout(function(){pollStatus(n+1)},1000);
+    });
+}
 // #FIELD-2c: запуск полевого AP-режима с фреш-платы без ввода домашней WiFi.
 // POST /api/field-mode (captive httpd, без CSRF) ставит NVS ap_mode=1 и ребутит —
-// плата поднимается в Outdoor (AtomSpectra-Outdoor). Fallback STA→Outdoor (90 с)
+// плата поднимается в Outdoor (RadexGW-Outdoor). Fallback STA→Outdoor (90 с)
 // покрывает уже настроенные платы; эта кнопка — для свежих, где сети нет вовсе.
 function doField(){
     if(!confirm(t("field.confirm")))return;

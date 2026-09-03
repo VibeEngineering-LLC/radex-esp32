@@ -1141,6 +1141,11 @@ static esp_err_t handle_system(httpd_req_t *req)
                   ? BLE_DBM[(int)lvl] : 0;
 
     char buf[512];
+    /* #RADEX-188: адрес прибора, к которому привязана плата. MAC в эфире может
+       принадлежать чужому Radex, и раньше по Web UI это было никак не видно. */
+    char dev_mac[18] = "";
+    ble_radex_target_mac(dev_mac, sizeof(dev_mac));
+
     int n = snprintf(buf, sizeof(buf),
         "{\"fw\":\"%s\",\"uptime_sec\":%lld,\"free_heap\":%u,\"heap_total\":%u,\"min_free_heap\":%u,"
         "\"psram_free\":%u,\"wifi_rssi\":%d,\"wifi_connected\":%s,\"ap_mode\":%s,"
@@ -1152,7 +1157,7 @@ static esp_err_t handle_system(httpd_req_t *req)
            читателя (экспорт большого файла на слабом канале) и показание
            потеряно. Молча такое не должно происходить — потому и в /api/system. */
         "\"wifi_tx_dbm\":%d,\"ble_tx_dbm\":%d,"
-        "\"io_rejects\":%u,\"lock_timeouts\":%u}",
+        "\"io_rejects\":%u,\"lock_timeouts\":%u,\"dev_mac\":\"%s\"}",
         app ? app->version : "?",
         (long long)(esp_timer_get_time() / 1000000),
         (unsigned)esp_get_free_heap_size(),
@@ -1166,7 +1171,8 @@ static esp_err_t handle_system(httpd_req_t *req)
         wifi_manager_is_ap_mode() ? "true" : "false",
         wifi_dbm, ble_dbm,
         (unsigned)http_io_gate_reject_count(),
-        (unsigned)radon_stats_lock_timeouts());
+        (unsigned)radon_stats_lock_timeouts(),
+        dev_mac);
     if (n < 0 || n >= (int)sizeof(buf)) return httpd_resp_send_500(req);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
@@ -1196,6 +1202,17 @@ static void restart_cb(void *arg) { esp_restart(); }
 // POST /api/target, тело: AA:BB:CC:DD:EE:FF
 // Перезагрузка отложена: сначала отдаём ответ, иначе браузер получит обрыв
 // соединения вместо подтверждения и не поймёт, применилось ли.
+/* #RADEX-190, оператор: «нужный прибор не видит». Поиск в эфире идёт ТОЛЬКО пока
+   прибор не выбран (ble_radex.c: scan_start вызывается при !s_have_target). Если
+   плата успела привязаться к чужому Radex по соседству, свой в списке уже не
+   появится — а сброса привязки не было ни в API, ни в UI. Этот эндпоинт его даёт. */
+static esp_err_t handle_target_clear(httpd_req_t *req)
+{
+    ble_radex_clear_target();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static esp_err_t handle_target(httpd_req_t *req)
 {
     char body[64] = {0};
@@ -1258,6 +1275,7 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/system",    .method = HTTP_GET, .handler = handle_system },
     { .uri = "/api/scan",      .method = HTTP_GET,  .handler = handle_scan   },
     { .uri = "/api/target",    .method = HTTP_POST, .handler = handle_target },
+    { .uri = "/api/target/clear", .method = HTTP_POST, .handler = handle_target_clear },
     { .uri = "/api/ha",        .method = HTTP_GET,  .handler = handle_ha_get },
     { .uri = "/api/ha",        .method = HTTP_POST, .handler = handle_ha_set },
     { .uri = "/api/history",   .method = HTTP_GET,  .handler = handle_history },

@@ -289,6 +289,37 @@ static void scan_start(void)
 
 // ── Публичный API поиска (для Web UI) ─────────────────────────────────────
 bool ble_radex_has_target(void) { return s_have_target; }
+
+// #RADEX-190: сброс привязки. Чистим NVS и поднимаем скан заново; текущее
+// соединение рвём, иначе плата продолжит читать прежний (чужой) прибор.
+void ble_radex_clear_target(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(RADEX_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, RADEX_NVS_MAC);
+        nvs_erase_key(h, RADEX_NVS_ATYPE);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    s_have_target = false;
+    memset(s_target_addr, 0, sizeof(s_target_addr));
+    ESP_LOGW(TAG, "привязка к прибору сброшена — ищу в эфире заново");
+    if (s_connected) esp_ble_gattc_close(s_gattc_if, s_conn_id);
+    scan_start();
+}
+
+// #RADEX-188: тот же адрес, но строкой — Web UI показывает его на вкладке
+// «Системные», чтобы было видно, к какому именно прибору привязана плата
+// (в эфире может быть чужой Radex, и раньше это ничем не выдавалось).
+bool ble_radex_target_mac(char *buf, size_t len)
+{
+    if (!buf || len < 18) return false;
+    if (!s_have_target) { buf[0] = '\0'; return false; }
+    snprintf(buf, len, "%02X:%02X:%02X:%02X:%02X:%02X",
+             s_target_addr[0], s_target_addr[1], s_target_addr[2],
+             s_target_addr[3], s_target_addr[4], s_target_addr[5]);
+    return true;
+}
 bool ble_radex_scanning(void)   { return s_scanning; }
 
 int ble_radex_found_json(char *buf, size_t len)

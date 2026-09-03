@@ -136,6 +136,121 @@ static esp_err_t handle_setup_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* ---- #RADEX-187: проверка сети прямо из портала ----
+   Портал раньше сохранял сеть и сразу перезагружался: пользователь оставался на
+   мёртвой странице, не зная ни адреса платы, ни того, верен ли пароль. Теперь
+   плата пробует подключиться, пока точка доступа ещё жива, и отдаёт странице
+   полученный IP. Перезагрузка — отложенным таймером, чтобы ответ успел уйти. */
+typedef enum { SETUP_PROBE_IDLE = 0, SETUP_PROBE_RUNNING, SETUP_PROBE_OK, SETUP_PROBE_FAIL } setup_probe_state_t;
+static volatile setup_probe_state_t s_probe_state = SETUP_PROBE_IDLE;
+static char s_probe_ip[16] = "";
+static esp_timer_handle_t s_probe_reboot_timer = NULL;
+
+/**
+ * Колбэк таймера перезагрузки после успешной настройки
+ */
+static void setup_probe_reboot_cb(void *arg) {
+    (void)arg;
+    ESP_LOGW(TAG, "настройка завершена, перезагружаюсь в рабочий режим");
+    esp_restart();
+}
+
+/**
+ * Обработчик событий во время проверки подключения
+ */
+static void setup_probe_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    (void)arg;
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
+        if (e == NULL) return;
+        snprintf(s_probe_ip, sizeof(s_probe_ip), IPSTR, IP2STR(&e->ip_info.ip));
+        s_probe_state = SETUP_PROBE_OK;
+        ESP_LOGI(TAG, "проверка сети: подключился, IP %s", s_probe_ip);
+
+        if (s_probe_reboot_timer == NULL) {
+            esp_timer_create_args_t timer_args = {
+                .callback = setup_probe_reboot_cb,
+                .arg = NULL,
+                .name = "setup_reboot"
+            };
+            esp_err_t err = esp_timer_create(&timer_args, &s_probe_reboot_timer);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "ошибка создания таймера перезагрузки: %s", esp_err_to_name(err));
+                return;
+            }
+        }
+        esp_err_t err = esp_timer_start_once(s_probe_reboot_timer, 20000000);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "ошибка запуска таймера перезагрузки: %s", esp_err_to_name(err));
+        }
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        wifi_event_sta_disconnected_t *e = (wifi_event_sta_disconnected_t *)data;
+        if (s_probe_state == SETUP_PROBE_RUNNING) {
+            s_probe_state = SETUP_PROBE_FAIL;
+            ESP_LOGW(TAG, "проверка сети: не удалось подключиться, reason=%u", (unsigned)(e ? e->reason : 0));
+        }
+    }
+}
+
+/**
+ * Обработчик HTTP-запроса статуса проверки подключения
+ */
+static esp_err_t handle_setup_status(httpd_req_t *req) {
+    char buf[160];
+    switch (s_probe_state) {
+        case SETUP_PROBE_IDLE:
+            snprintf(buf, sizeof(buf), "{\"state\":\"idle\"}");
+            break;
+        case SETUP_PROBE_RUNNING:
+            snprintf(buf, sizeof(buf), "{\"state\":\"connecting\"}");
+            break;
+        case SETUP_PROBE_OK:
+            snprintf(buf, sizeof(buf), "{\"state\":\"ok\",\"ip\":\"%s\",\"url\":\"http://%s/\"}", s_probe_ip, s_probe_ip);
+            break;
+        case SETUP_PROBE_FAIL:
+            snprintf(buf, sizeof(buf), "{\"state\":\"fail\"}");
+            break;
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/**
+ * Запуск проверки подключения к Wi-Fi
+ */
+static void setup_probe_start(const char *ssid, const char *password) {
+    if (s_probe_state == SETUP_PROBE_RUNNING) return;
+
+    s_probe_state = SETUP_PROBE_RUNNING;
+    s_probe_ip[0] = '\0';
+
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, setup_probe_event, NULL, NULL);
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, setup_probe_event, NULL, NULL);
+
+    wifi_config_t sta = {0};
+    strncpy((char *)sta.sta.ssid, ssid, sizeof(sta.sta.ssid) - 1);
+    sta.sta.ssid[sizeof(sta.sta.ssid) - 1] = '\0';
+    if (password != NULL) {
+        strncpy((char *)sta.sta.password, password, sizeof(sta.sta.password) - 1);
+        sta.sta.password[sizeof(sta.sta.password) - 1] = '\0';
+    } else {
+        memset(sta.sta.password, 0, sizeof(sta.sta.password));
+    }
+
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ошибка установки конфигурации Wi-Fi: %s", esp_err_to_name(err));
+    }
+
+    err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "ошибка запуска подключения Wi-Fi: %s", esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG, "проверка сети: пробую подключиться к '%s'", ssid);
+}
+
 static esp_err_t handle_setup_connect(httpd_req_t *req)
 {
     char body[256] = {0};
@@ -182,12 +297,12 @@ static esp_err_t handle_setup_connect(httpd_req_t *req)
         ESP_LOGI(TAG, "WiFi config saved: SSID=%s", ssid);
     }
 
+    // #RADEX-187: пробуем подключиться СРАЗУ, не перезагружаясь. Страница опросит
+    // /api/status и покажет реальный IP (или сообщит, что пароль не подошёл).
+    setup_probe_start(ssid, pass);
     cJSON_Delete(root);
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true}");
-
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    esp_restart();
+    httpd_resp_sendstr(req, "{\"ok\":true,\"probe\":true}");
     return ESP_OK;
 }
 
@@ -217,11 +332,43 @@ static esp_err_t handle_setup_redirect(httpd_req_t *req)
     return ESP_OK;
 }
 
+// События точки доступа в режиме настройки. Пишутся только по событию, поэтому
+// эфир лога не забивают, зато при жалобе «не подключается» сразу видно, на каком
+// шаге всё встало: ассоциация, выдача адреса или клиент ушёл сам (#RADEX-184).
+static void setup_ap_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    (void)arg;
+    if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t *e = (wifi_event_ap_staconnected_t *)data;
+        if (e) {
+            ESP_LOGI(TAG, "портал: клиент подключился, AID=%d", e->aid);
+        }
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t *e = (wifi_event_ap_stadisconnected_t *)data;
+        if (e) {
+            ESP_LOGW(TAG, "портал: клиент ушёл, AID=%d reason=%u", e->aid, (unsigned)e->reason);
+        }
+    } else if (base == IP_EVENT && id == IP_EVENT_AP_STAIPASSIGNED) {
+        ip_event_ap_staipassigned_t *e = (ip_event_ap_staipassigned_t *)data;
+        if (e) {
+            ESP_LOGI(TAG, "портал: клиенту выдан адрес " IPSTR, IP2STR(&e->ip));
+        }
+    }
+}
+
 static void start_captive_portal(void)
 {
     s_mode = NET_MODE_SETUP;
 
     esp_netif_create_default_wifi_ap();
+    // #RADEX-187: STA-интерфейс нужен здесь же — иначе при проверке сети
+    // не запустится DHCP-клиент и событие с адресом не придёт вовсе.
+    esp_netif_create_default_wifi_sta();
+
+    // Обработчики — до старта, чтобы не пропустить ранние события.
+    esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+        &setup_ap_event_handler, NULL, NULL);
+    esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID,
+        &setup_ap_event_handler, NULL, NULL);
 
     wifi_config_t ap_config = {
         .ap = {
@@ -249,6 +396,7 @@ static void start_captive_portal(void)
         const httpd_uri_t uris[] = {
             {"/",              HTTP_GET,  handle_setup_root,     NULL},
             {"/api/scan",      HTTP_GET,  handle_setup_scan,     NULL},
+            {"/api/status",    HTTP_GET,  handle_setup_status,   NULL},
             {"/api/connect",   HTTP_POST, handle_setup_connect,  NULL},
             {"/api/field-mode",HTTP_POST, handle_setup_field,    NULL},  // #FIELD-2c
             {"/*",             HTTP_GET,  handle_setup_redirect, NULL},

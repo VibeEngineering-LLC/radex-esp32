@@ -12,6 +12,14 @@ cd /project
 # Смена цели требует удалить sdkconfig — он привязан к чипу (см. sdkconfig.s3.bak).
 TARGET="${RADEX_TARGET:-esp32s3}"
 if [ ! -f sdkconfig ]; then idf.py set-target "$TARGET" >> "$LOG" 2>&1; fi
+# Страница собирается из web/index.src.html и web/styles/*.css скриптом
+# build_page.py; готовый web/index.html — продукт сборки, в репозитории он не
+# хранится (иначе каждая правка стиля давала бы конфликт в 370 КБ). CMake его
+# встраивает через EMBED_FILES, поэтому генерация обязана идти ДО idf.py build:
+# без неё свежий клон репозитория не собирается вовсе.
+if [ -f web/build_page.py ]; then
+  (cd web && python3 build_page.py) >> "$LOG" 2>&1 || { echo "BUILD_FAILED: не собралась страница"; tail -5 "$LOG"; exit 1; }
+fi
 # Локальный режим (W-063): по умолчанию ВЫКЛЮЧЕН, то есть сетевые данные
 # в образ не попадают. Значение передаётся в CMake ЯВНО при каждой сборке —
 # ноль тоже: иначе единица осталась бы в кэше CMakeCache.txt и следующая

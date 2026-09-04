@@ -7,7 +7,7 @@
    Цвета данных читает код рисования через getComputedStyle, поэтому тема
    и график не могут разойтись. */
 :root{
-  --fs-xs:12px;--fs-sm:13px;--fs-md:14px;--fs-lg:16px;--fs-xl:20px;--fs-2xl:26px;
+  --fs-xs:14px;--fs-sm:15px;--fs-md:16px;--fs-lg:18px;--fs-xl:22px;--fs-2xl:28px;
   --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-6:24px;
   --radius:10px;
   --bg:#020617;--card:#0F172A;--card2:#1E293B;--ink:#F8FAFC;--dim:#94A3B8;
@@ -31,7 +31,7 @@
 
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-text-size-adjust:100%}
-body{background:var(--bg);color:var(--ink);font:400 15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums;overflow-wrap:break-word;text-wrap:pretty}
+body{background:var(--bg);color:var(--ink);font:400 16px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-variant-numeric:tabular-nums;overflow-wrap:break-word;text-wrap:pretty}
 img,canvas,svg{display:block;max-width:100%}
 a{color:var(--ok);text-decoration:none}
 a:hover{color:var(--ink);text-decoration:underline}
@@ -70,7 +70,7 @@ a:hover{color:var(--ink);text-decoration:underline}
   .t-short{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tab-container{position:fixed;top:auto;bottom:0;left:0;right:0;margin:0;padding-top:0;border-bottom:none;border-top:1px solid var(--line);background:var(--bg)}
   .tabs{gap:2px;overflow:visible;padding:6px max(var(--sp-2),var(--safe-left)) calc(6px + var(--safe-bottom)) max(var(--sp-2),var(--safe-right));-webkit-mask-image:none;mask-image:none}
-  .tab{flex:1 1 0;min-width:0;min-height:44px;padding:6px 3px;border:none;border-radius:8px;font-size:11px;font-weight:500;letter-spacing:.01em;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .2s,color .2s}
+  .tab{flex:1 1 0;min-width:0;min-height:44px;padding:6px 3px;border:none;border-radius:8px;font-size:13px;font-weight:500;letter-spacing:.01em;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .2s,color .2s}
   .tab[aria-selected=true]{color:var(--ok);background:var(--card2)}
   /* Верхний отступ на телефоне — не меньше 14 px, а при вырезе равен его
      высоте: первая карточка не должна заезжать под челку и часы. */
@@ -116,7 +116,7 @@ a:hover{color:var(--ink);text-decoration:underline}
    результат измерения. Полоса занимает всю ширину карточки под значениями. */
 .card-climate .status-bar{grid-column:1/-1;margin:0;padding-top:8px;border-top:1px solid var(--line);align-items:flex-start}
 .card-climate .status-dot{margin-top:5px}
-.status-short{display:none;font-size:11px;color:var(--dim);white-space:nowrap}
+.status-short{display:none;font-size:13px;color:var(--dim);white-space:nowrap}
 /* Телефон: индикатор опроса встаёт третьей колонкой в ряд с температурой и
    влажностью — цвет точки и «сколько минут назад» отвечают на вопрос «данные
    свежие?», а полная формулировка на первом экране только занимает две строки. */
@@ -148,7 +148,7 @@ a:hover{color:var(--ink);text-decoration:underline}
 /* #RADEX-126: индикатор только на «Показаниях» — цвет вслед за
    --data-mean-alt, не за общим --data-mean (тот остаётся у «Графиков»). */
 .levels-mean{left:-4px;right:45%;border-top:3px solid var(--data-mean-alt);box-shadow:0 0 0 1px rgba(2,6,23,.7)}
-.levels-scale{position:relative;display:flex;flex-direction:column;justify-content:space-between;font-size:10px;color:var(--dim);white-space:nowrap}
+.levels-scale{position:relative;display:flex;flex-direction:column;justify-content:space-between;font-size:12px;color:var(--dim);white-space:nowrap}
 #levels-norm,#levels-green{position:absolute;left:0}
 #levels-green{color:var(--ok)}
 @media(min-width:640px){.levels{grid-template-columns:14px auto}}
@@ -207,14 +207,20 @@ h2{font-size:var(--fs-lg);font-weight:600}
    (заключение, состояние замера, кнопки, оценка интервала, параметры оценки),
    справа только справочный текст методики. Свёрнутые примечания остались одни —
    «О методике и источники». */
-.method-cols{display:grid;gap:var(--sp-3);align-items:start}
-@media(min-width:900px){.method-cols{grid-template-columns:1.05fr 1fr;gap:var(--sp-4)}}
+/* #RADEX-213: ОДНА колонка. Двухколоночная раскладка (#RADEX-165) существовала
+   ради справочного текста методики справа; текст уехал на свою вкладку
+   (#RADEX-210), и от неё осталась узкая рабочая колонка рядом с пустотой.
+   Ширина ограничена: рабочие карточки во всю ширину 1200 px читаются хуже, чем
+   колонка нормальной длины строки. */
+/* #RADEX-214, оператор: «блоки не зажимай по ширине» — карточки занимают всю
+   ширину контейнера (.container, 1200 px), своего потолка у колонки нет. */
+.method-cols{display:block}
 .method-params{margin-bottom:0}
 .method-params .section-title{margin-top:0}
 .method-params .form-group input,.method-params .form-group select{max-width:none}
 .btn-row{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 details.note{margin-top:6px}
-details.note summary{cursor:pointer;font-size:12px;color:var(--dim);text-decoration:underline;text-decoration-style:dotted;list-style:none;-webkit-tap-highlight-color:transparent}
+details.note summary{cursor:pointer;font-size:var(--fs-xs);color:var(--dim);text-decoration:underline;text-decoration-style:dotted;list-style:none;-webkit-tap-highlight-color:transparent}
 details.note summary::-webkit-details-marker{display:none}
 details.note summary::before{content:"› ";color:var(--dim)}
 details.note[open] summary::before{content:"⌄ "}
@@ -234,15 +240,19 @@ div.note{margin-top:var(--sp-4)}
 div.note>.note-head{font-size:var(--fs-md);font-weight:600;color:var(--ink);margin-bottom:var(--sp-1)}
 .method-refs{margin-top:var(--sp-4)}
 
-/* #RADEX-165, правая колонка — справочный текст методики. Длина строки: колонка
-   на десктопе ~550 px, при 12 px это ~88 знаков в строке — вдвое выше комфортного.
+/* #RADEX-165 → #RADEX-210: типографика справочного текста методики. Правила
+   писались для правой колонки «Соответствия» (.method-ref); текст переехал на
+   вкладку «Метод», и селекторы переехали вместе с ним — иначе вкладка теряет
+   и длину строки, и цвет списков, и ритм отступов.
+   Длина строки: колонка Длина строки: колонка
+   ~550 px, при 12 px это ~88 знаков в строке — вдвое выше комфортного.
    64ch (~62 знака на кириллице) держит строку в рекомендованном коридоре 60–75
    знаков (ui-ux-pro-max, line-length-control) и на телефоне ни на что не влияет:
    там ширина экрана меньше и ограничение не срабатывает. Вертикальный ритм задан
    правилами, а не инлайновыми margin-top у каждого абзаца — иначе отступы
    расходятся при любой правке текста. */
-.method-ref{margin-bottom:0}
-.method-ref .section-title{margin-top:0}
+#rational-content .card{margin-bottom:var(--sp-2)}
+#rational-content .section-title{margin-top:0}
 /* font-size у ol/ul задан ЯВНО, а не унаследован от li: единица ch считается от
    шрифта САМОГО элемента, и у списка без этой строки 64ch мерились по 15 px тела
    страницы — строки списка выходили на ~110 px правее абзацев, край текста
@@ -251,12 +261,13 @@ div.note>.note-head{font-size:var(--fs-md);font-weight:600;color:var(--ink);marg
    наследовал --ink от карточки, и в одной колонке соседствовали белый список и
    приглушённые абзацы — «основной текст одного цвета» ломался ровно на границе
    абзац/список. Замечено по скриншоту живой платы (12 px ink против 12 px dim). */
-.method-ref .sub,.method-ref li,.method-ref ol,.method-ref ul{font-size:var(--fs-xs);line-height:1.6;color:var(--dim)}
-.method-ref .sub,.method-ref ol,.method-ref ul{max-width:64ch}
-.method-ref .sub+.sub{margin-top:var(--sp-2)}
-.method-ref ol{padding-left:20px;margin-top:var(--sp-2)}
-.method-ref ol>li+li{margin-top:var(--sp-2)}
-.method-ref ul{margin-top:var(--sp-1)}
+#rational-content .sub,#rational-content li,#rational-content ol,#rational-content ul{font-size:var(--fs-xs);line-height:1.6;color:var(--dim)}
+/* #RADEX-214: ограничение длины строки (64ch) снято по указанию оператора —
+   текст идёт во всю ширину карточки, без пустой полосы справа. */
+#rational-content .sub+.sub{margin-top:var(--sp-2)}
+#rational-content ol{padding-left:20px;margin-top:var(--sp-2)}
+#rational-content ol>li+li{margin-top:var(--sp-2)}
+#rational-content ul{margin-top:var(--sp-1)}
 
 .form-group{margin-bottom:var(--sp-3)}
 label{display:block;margin-bottom:var(--sp-1);font-size:var(--fs-sm);color:var(--dim)}
@@ -271,9 +282,12 @@ input[type=checkbox]{width:auto;min-height:0;accent-color:var(--ok)}
 
 /* Параметры оценки: короткие поля с длинными пояснениями — в ряд они видны
    целиком, колонкой занимали несколько экранов. */
-.assess-grid{display:grid;gap:var(--sp-3) 18px;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));align-items:start}
+/* #RADEX-213: параметры критерия — в один столбец. auto-fit ставил их в два
+   при ширине от ~560 px, и поля с пояснениями разной длины расходились по
+   высоте рваными ступенями (тот же скриншот). Поле уже колонки: числу и
+   выпадающему списку не нужна вся ширина, а пояснению под ними — нужна. */
+.assess-grid{display:grid;gap:var(--sp-4);grid-template-columns:1fr;align-items:start}
 .assess-grid .form-group{margin-bottom:0}
-.assess-grid input,.assess-grid select{max-width:none}
 .assess-grid .sub{line-height:1.4}
 @media(min-width:1024px){.assess-grid input,.assess-grid select{padding:9px 10px;min-height:40px;font-size:var(--fs-md)}}
 
@@ -284,3 +298,84 @@ td:first-child{white-space:nowrap}
 @media(min-width:640px){th,td{padding:9px var(--sp-3);font-size:var(--fs-md)}}
 
 .log-container{background:var(--card2);border-radius:8px;padding:var(--sp-3);margin-top:var(--sp-3);font:var(--fs-xs)/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:min(50dvh,420px);overflow:auto;-webkit-overflow-scrolling:touch}
+
+/* #RADEX-210: вход на вкладку «Метод» с вкладки «Соответствие нормативу».
+   Кнопка, а не строка-ссылка в тексте: автор методики просит ознакомиться с
+   методом ДО начала теста, значит вход должен быть заметен сам по себе.
+   white-space:normal обязателен — у button по умолчанию текст в одну строку. */
+/* #RADEX-215, оператор: «выделить ярким цветом и заливкой», «явно указать
+   “читать”». Заливка сплошная, а не рамка на тёмном: с рамкой блок читался как
+   ещё одна справочная карточка. Цвет — синий акцент: зелёный, жёлтый и красный
+   на этой странице означают состояния заключения, и призыв в их палитре
+   выглядел бы как вердикт прибора. Слово действия вынесено на белую плашку —
+   на неё же смотрит взгляд, ищущий, куда нажать. */
+.method-cta{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);
+  flex-wrap:wrap;width:100%;text-align:left;white-space:normal;padding:var(--sp-4);
+  background:var(--accent);border:2px solid #60A5FA;border-radius:var(--radius);
+  box-shadow:0 2px 12px rgba(37,99,235,.35);cursor:pointer}
+.method-cta:hover{background:#1D4ED8;border-color:#93C5FD}
+.method-cta-body{flex:1 1 300px}
+.method-cta-title{display:block;font-size:var(--fs-lg);font-weight:700;color:#fff;margin-bottom:var(--sp-1)}
+.method-cta-note{display:block;font-size:var(--fs-sm);font-weight:400;color:#DBEAFE;line-height:1.5}
+.method-cta-action{flex:0 0 auto;padding:10px 24px;background:#fff;color:#1D4ED8;border-radius:8px;
+  font-size:var(--fs-md);font-weight:700;white-space:nowrap}
+.method-cta:hover .method-cta-action{background:#EFF6FF}
+
+/* #RADEX-216: одна карточка на весь блок управления замером. Верхний отступ у
+   .test-state снят — он рассчитан на голую строку между карточками, внутри
+   карточки давал провал; архивная часть отделена линией, а не второй карточкой. */
+.test-card .test-state{margin-top:0}
+.assess-range{margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line)}
+.assess-range .card-title{margin-bottom:var(--sp-2)}
+/* #RADEX-228: имя замера — отделено линией от кнопок «Новый замер»/«Сброс»:
+   это про сохранение, а не про управление ходом замера. */
+.test-name{margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line);margin-bottom:0}
+.test-name input{max-width:320px}
+/* #RADEX-227: вывод архивного заключения на «Графиках». Собственная карточка
+   заключения внутри — та же палитра состояний, что у текущего замера
+   (.assessment-card .complies/.exceeds/…), но своя, отдельная от него. */
+.assess-arch-out .assessment-card{margin-top:0}
+.assess-arch-out .assessment-card .sub{margin-top:var(--sp-2)}
+.assess-arch-out .assessment-card .sub>div{margin-top:4px}
+.assess-arch .chart-controls{flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
+
+/* #RADEX-217, оператор: «ширина блоков используется не оптимально. не красиво»
+   (вкладка «Интеграции»). Причина — моя правка #RADEX-213: класс .method-cols
+   носят ДВЕ вкладки, и, сводя «Соответствие» в одну колонку, я заодно распрямил
+   «Интеграции», где две колонки были уместны. Разделяем по вкладкам, а не по
+   общему классу: у «Интеграций» карточки короткие и раскладываются по ширине
+   сами, у «Соответствия» одна колонка остаётся (решение оператора 03.09).
+   Поля внутри тянутся на всю карточку: 420 px в карточке 1200 px и были той
+   самой неиспользованной шириной. */
+#settings-content .method-cols{display:grid;gap:var(--sp-3);grid-template-columns:1fr;align-items:start}
+/* #RADEX-218, оператор: «напрашиваются интеграции слева а время справа».
+   Раскладка задана ОБЛАСТЯМИ, а не порядком карточек в потоке: auto-fit
+   расставлял их построчно (Home Assistant | Народмон, затем «Время» под HA и
+   пустая клетка справа), и смысловая пара «две интеграции» разрывалась.
+   Именованные области переживают добавление карточки и не зависят от того,
+   какой по счёту стоит блок в разметке. */
+@media(min-width:900px){
+  #settings-content .method-cols{grid-template-columns:1fr 1fr;
+    grid-template-areas:"ha time" "nm time"}
+  #settings-content .int-ha{grid-area:ha}
+  #settings-content .int-nm{grid-area:nm}
+  #settings-content .int-time{grid-area:time;align-self:start}
+}
+#settings-content .form-group input,#settings-content .form-group select{max-width:none}
+#settings-content .card{margin-bottom:0}
+/* «Соответствие»: колонка одна, поэтому поле занимает её целиком — иначе слева
+   стоит короткий огрызок, а справа пустая половина карточки. */
+.method-params .form-group input,.method-params .form-group select,
+.assess-grid input,.assess-grid select{max-width:none}
+
+/* #RADEX-221, оператор: «выровняй показания по центру блока». Карточки первого
+   экрана («Текущая ОА радона», «Средняя ОА радона», температура/влажность):
+   подпись и число по центру, а не прижаты к левому краю. Строка состояния
+   опроса внутри климатической карточки остаётся выровненной по своему потоку —
+   там иконка и текст, центрировать их вместе с числами незачем. */
+.grid .card{text-align:center}
+.grid .card .status-bar{justify-content:center}
+
+/* #RADEX-223: таблица внутри карточки — без внешних отступов, иначе она отходит
+   от собственного заголовка сильнее, чем от соседней карточки. */
+.periods-card table{margin-top:var(--sp-2)}

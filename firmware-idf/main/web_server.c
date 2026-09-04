@@ -71,6 +71,19 @@ static const char *TAG = "web";
 
 EMBED_HTML_HANDLER(handle_root, index_html)
 
+/* #RADEX-225: GET /api/method/tables — таблицы UV(t)/Kp(t) методики.
+   Нужны странице, чтобы нарисовать сужающийся доверительный интервал: UV берётся
+   для длительности КАЖДОЙ точки, а не только текущей. Буфер 1 КБ с запасом:
+   21 узел нормального режима + 23 ограниченного дают ~700 байт. */
+static esp_err_t handle_method_tables(httpd_req_t *req)
+{
+    char buf[1024];
+    int n = radon_stats_method_tables_json(buf, sizeof(buf));
+    if (n < 0) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, n);
+}
+
 static esp_err_t handle_data(httpd_req_t *req)
 {
     char buf[512];
@@ -279,18 +292,130 @@ static esp_err_t handle_stats(httpd_req_t *req) {
    истории (#RADEX-40). Границы необязательны: ноль означает «без ограничения».
    Настройки норматива и неопределённости берутся те же, что и для /api/stats —
    иначе одно и то же измерение получало бы разные заключения. */
-static esp_err_t handle_assess(httpd_req_t *req) {
-    time_t from = 0, to = 0;
-    char query[128];
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char val[32];
-        if (httpd_query_key_value(query, "from", val, sizeof(val)) == ESP_OK) from = (time_t)atoll(val);
-        if (httpd_query_key_value(query, "to", val, sizeof(val)) == ESP_OK)   to   = (time_t)atoll(val);
+/* #RADEX-228: POST /api/tests/save — «Сохранить замер». Тело — имя (может
+   быть пустым). Снимает идущий замер в его файл и подписывает: у неявного
+   замера файла нет, и без снимка сохранять было бы нечего. */
+static esp_err_t handle_test_save(httpd_req_t *req) {
+    char body[40] = {0};
+    int len = req->content_len;
+    if (len > 0 && len < (int)sizeof(body)) {
+        int received = httpd_req_recv(req, body, len);
+        if (received <= 0) {
+            httpd_resp_send_500(req);
+            return ESP_FAIL;
+        }
+        body[received] = '\0';
     }
 
+    uint32_t points = 0;
+    time_t start = radon_stats_test_snapshot(&points);
+    if (start <= 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "нечего сохранять: истории измерений пока нет");
+        return ESP_FAIL;
+    }
+
+    radon_stats_test_label_set(start, body);
+
+    char stored[32] = {0};
+    radon_stats_test_label_get(start, stored, sizeof(stored));
+
+    char resp[128];
+    /* time_t в IDF 64-битный — печатать %lld с явным приведением, как во всех
+       остальных ответах модуля; %ld здесь роняет сборку (-Werror=format). */
+    int resp_len = snprintf(resp, sizeof(resp),
+                            "{\"ok\":true,\"start\":%lld,\"points\":%u,\"label\":\"%s\"}",
+                            (long long)start, (unsigned)points, stored);
+    if (resp_len < 0 || resp_len >= (int)sizeof(resp)) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+/* #RADEX-228: POST /api/tests/label — имя сохранённого замера. Тело
+   "<start>|<имя>", пустое имя после разделителя снимает имя. Формат тела такой
+   же, как у остальных POST страницы (a|b), и это не стилистика: ровно на
+   рассинхроне «страница шлёт JSON — обработчик разбирает a|b» три настройки не
+   сохранялись месяцами (#RADEX-229 / P-033). */
+static esp_err_t handle_test_label(httpd_req_t *req)
+{
+    char body[64] = {0};
+    int len = req->content_len;
+    if (len <= 0 || len >= (int)sizeof(body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело <start>|<имя>");
+        return ESP_FAIL;
+    }
+
+    int recv_len = httpd_req_recv(req, body, len);
+    if (recv_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело <start>|<имя>");
+        return ESP_FAIL;
+    }
+    body[recv_len] = '\0';
+
+    char *sep = strchr(body, '|');
+    if (!sep) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело <start>|<имя>");
+        return ESP_FAIL;
+    }
+
+    *sep = '\0';
+    long long start = atoll(body);
+    char *label = sep + 1;
+
+    if (start <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "start должен быть epoch замера");
+        return ESP_FAIL;
+    }
+
+    if (!radon_stats_test_label_set((time_t)start, label)) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "не удалось сохранить имя");
+        return ESP_FAIL;
+    }
+
+    char stored[32] = {0};
+    radon_stats_test_label_get((time_t)start, stored, sizeof(stored));
+
+    char resp[96];
+    int n = snprintf(resp, sizeof(resp), "{\"ok\":true,\"start\":%lld,\"label\":\"%s\"}", start, stored);
+    if (n < 0 || n >= (int)sizeof(resp)) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, strlen(resp));
+    return ESP_OK;
+}
+
+/* #RADEX-227: у оценки появился третий параметр — start. С ним заключение
+   считается по файлу ОДНОГО сохранённого замера (архивная оценка уехала на
+   «Графики»), без него — по интервалу общей истории, как раньше. Параметры
+   взаимоисключающие: при заданном start границы from/to не применяются. */
+static esp_err_t handle_assess(httpd_req_t *req)
+{
+    char query[128];
+    char val[32];
+    time_t from = 0, to = 0;
+    long long start = 0;
+
+    /* #RADEX-48: разбор ТОЛЬКО по коду возврата. httpd_query_key_value при
+       отсутствии ключа не трогает val, и он остаётся со значением ПРОШЛОГО
+       ключа — именно так «?start=…» без from/to получил бы чужие границы. */
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "from", val, sizeof(val)) == ESP_OK)  from  = (time_t)atoll(val);
+        if (httpd_query_key_value(query, "to", val, sizeof(val)) == ESP_OK)    to    = (time_t)atoll(val);
+        if (httpd_query_key_value(query, "start", val, sizeof(val)) == ESP_OK) start = atoll(val);
+    }
+
+    nvs_handle_t h;
     int32_t crl = 200, ud = 30;
     int8_t restr = 0;
-    nvs_handle_t h;
+
     if (nvs_open("radon", NVS_READONLY, &h) == ESP_OK) {
         nvs_get_i32(h, "crl", &crl);
         nvs_get_i32(h, "ud", &ud);
@@ -298,15 +423,23 @@ static esp_err_t handle_assess(httpd_req_t *req) {
         nvs_close(h);
     }
 
-    static char buf[512];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
-    int len = radon_stats_assess_json(buf, sizeof(buf), from, to,
-                                      (float)crl, ud / 100.0f, restr != 0);
+    static char buf[512];
+    int len;
+
+    if (start > 0) {
+        len = radon_stats_assess_test_json(buf, sizeof(buf), (time_t)start, (float)crl, ud / 100.0f, restr != 0);
+    } else {
+        len = radon_stats_assess_json(buf, sizeof(buf), from, to, (float)crl, ud / 100.0f, restr != 0);
+    }
+
     if (len < 0 || len >= (int)sizeof(buf)) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
+
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, buf, len);
+    httpd_resp_send(req, buf, len);
+    return ESP_OK;
 }
 
 
@@ -728,6 +861,7 @@ static esp_err_t handle_test_ctl(httpd_req_t *req)
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"   /* #RADEX-229: esp_read_mac для MAC платы */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -1145,6 +1279,15 @@ static esp_err_t handle_system(httpd_req_t *req)
        принадлежать чужому Radex, и раньше по Web UI это было никак не видно. */
     char dev_mac[18] = "";
     ble_radex_target_mac(dev_mac, sizeof(dev_mac));
+    /* #RADEX-229: MAC САМОЙ ПЛАТЫ (Wi-Fi STA) — это её идентификатор на
+       narodmon.ru: данные отправляет плата, а не прибор. Пользователь его ниоткуда
+       не мог узнать и вводил в поле «Адрес станции» что попало (жалоба 04.09),
+       поэтому отдаём страницей. dev_mac рядом — MAC ПРИБОРА, разные вещи. */
+    uint8_t sta[6] = {0};
+    esp_read_mac(sta, ESP_MAC_WIFI_STA);
+    char sta_mac[18];
+    snprintf(sta_mac, sizeof(sta_mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+             sta[0], sta[1], sta[2], sta[3], sta[4], sta[5]);
 
     int n = snprintf(buf, sizeof(buf),
         "{\"fw\":\"%s\",\"uptime_sec\":%lld,\"free_heap\":%u,\"heap_total\":%u,\"min_free_heap\":%u,"
@@ -1157,7 +1300,7 @@ static esp_err_t handle_system(httpd_req_t *req)
            читателя (экспорт большого файла на слабом канале) и показание
            потеряно. Молча такое не должно происходить — потому и в /api/system. */
         "\"wifi_tx_dbm\":%d,\"ble_tx_dbm\":%d,"
-        "\"io_rejects\":%u,\"lock_timeouts\":%u,\"dev_mac\":\"%s\"}",
+        "\"io_rejects\":%u,\"lock_timeouts\":%u,\"dev_mac\":\"%s\",\"sta_mac\":\"%s\"}",
         app ? app->version : "?",
         (long long)(esp_timer_get_time() / 1000000),
         (unsigned)esp_get_free_heap_size(),
@@ -1172,7 +1315,7 @@ static esp_err_t handle_system(httpd_req_t *req)
         wifi_dbm, ble_dbm,
         (unsigned)http_io_gate_reject_count(),
         (unsigned)radon_stats_lock_timeouts(),
-        dev_mac);
+        dev_mac, sta_mac);
     if (n < 0 || n >= (int)sizeof(buf)) return httpd_resp_send_500(req);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
@@ -1295,11 +1438,14 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/history/range", .method = HTTP_GET, .handler = handle_history_range },
     { .uri = "/api/history/import", .method = HTTP_POST, .handler = handle_history_import },   /* #RADEX-174 */
     { .uri = "/api/assess", .method = HTTP_GET, .handler = handle_assess },
+    { .uri = "/api/method/tables", .method = HTTP_GET, .handler = handle_method_tables },   /* #RADEX-225 */
     { .uri = "/api/cycle", .method = HTTP_GET, .handler = handle_cycle },
     { .uri = "/api/compact", .method = HTTP_POST, .handler = handle_compact },
     { .uri = "/api/reboot",  .method = HTTP_POST, .handler = handle_reboot },   /* #RADEX-148 */
     { .uri = "/api/tests",  .method = HTTP_GET, .handler = handle_tests_list },
     { .uri = "/api/tests/points", .method = HTTP_GET, .handler = handle_tests_points },
+    { .uri = "/api/tests/label", .method = HTTP_POST, .handler = handle_test_label },   /* #RADEX-228 */
+    { .uri = "/api/tests/save",  .method = HTTP_POST, .handler = handle_test_save },   /* #RADEX-228 */
     { .uri = "/healthcheck",   .method = HTTP_GET,  .handler = handle_health },
 };
 #define URI_COUNT (sizeof(s_uris) / sizeof(s_uris[0]))

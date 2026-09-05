@@ -813,7 +813,9 @@
            Пусто, пока включена только одна (обычное состояние, ничего
            различать не надо). Заполняется multiUpdateMetricLegend(). -->
         <div id="multi-metric-legend" class="sub" style="margin-top:4px;font-size:var(--fs-xs)"></div>
-        <div class="sub" id="multi-hint" style="margin-top:6px;font-size:var(--fs-xs)">Колесо мыши — масштаб по времени, перетаскивание — сдвиг, двойное нажатие — сброс, значок ⛶ — во весь экран.</div>
+        <!-- #RADEX-254: жест выделения назван первым — им пользуются чаще
+             остальных, а без подсказки о нём никто не догадается. -->
+        <div class="sub" id="multi-hint" style="margin-top:6px;font-size:var(--fs-xs)">Shift + протяжка — выбрать интервал, колесо мыши — масштаб по времени, перетаскивание — сдвиг, двойное нажатие — сброс, значок ⛶ — во весь экран.</div>
       </div>
       <!-- #RADEX-236, оператор: «поле оценки под графиком размести». Заключение
            относится к тому, что нарисовано выше, — между ними не должно быть ни
@@ -2814,6 +2816,8 @@ function multiBind() {
      охват 60 с (тот же порог, что и вырожденный диапазон в multiRedraw(),
      строка ~1733) и жёсткий clamp всего окна внутрь dataRange — зум/пан
      физически не может показать пустоту там, где данных нет. */
+  multiBindRangeSelect(cv);
+
   cv.addEventListener('wheel', function(e) {
     e.preventDefault();
     if (!visibleRange || !dataRange) return;
@@ -2846,6 +2850,8 @@ function multiBind() {
   });
 
   cv.addEventListener('mousedown', function(e) {
+    /* #RADEX-254: с Shift идёт выделение интервала, а не сдвиг. */
+    if (e.shiftKey) return;
     isDragging = true;
     lastX = e.clientX;
   });
@@ -3017,7 +3023,12 @@ function multiBind() {
       multiHitState.activeM.forEach(m => {
         const v = p[metricField(m)];
         if (v === null || v === undefined || !isFinite(v)) return;
-        parts.push(`${metricName(m)} ${Math.round(v * 10) / 10} ${metricUnit(m)}`);
+        /* #RADEX-256, оператор: «поле обрезано. убери лишние слова». Название
+           величины печатается, только когда их на графике НЕСКОЛЬКО: при одном
+           радоне «радон 320 Бк/м³» — слово ради слова, а подсказка из-за него
+           не влезала и обрывалась на «радо…». */
+        const label = multiHitState.activeM.length > 1 ? metricName(m) + ' ' : '';
+        parts.push(`${label}${Math.round(v * 10) / 10} ${metricUnit(m)}`);
       });
       if (parts.length) lines.push({ name: s.name, color: s.color, t: p.t, text: parts.join(', ') });
     });
@@ -3196,12 +3207,22 @@ function multiShowTooltip(clientX, clientY, lines) {
     document.body.appendChild(multiTooltipEl);
   }
   const p2 = n => String(n).padStart(2, '0');
+  /* #RADEX-256: имя ряда — короткое (метка замера), а при единственном ряде его
+     нет вовсе: цветной квадратик и так говорит, о каком ряде речь. Полное имя
+     («замер 05.08.2025, 00:55:05») не влезало, и подсказка обрывалась. */
+  const shortName = n => {
+    if (n === 'текущая сессия') return 'текущий замер';
+    const rows = (typeof testsPanelRows === 'function') ? testsPanelRows() : [];
+    const row = rows.find(r => r.seriesName === n);
+    return row ? row.title : n;
+  };
   let html = '';
   lines.forEach(l => {
     const d = new Date(l.t * 1000);
     const timeStr = `${p2(d.getDate())}.${p2(d.getMonth() + 1)} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const who = lines.length > 1 ? ` ${shortName(l.name)}` : '';
     html += `<div class="mt-row"><span class="mt-sw" style="background:${l.color}"></span>` +
-            `<b>${timeStr}</b> ${l.name}: ${l.text}</div>`;
+            `<b>${timeStr}</b>${who} · ${l.text}</div>`;
   });
   multiTooltipEl.innerHTML = html;
   multiTooltipEl.style.display = 'block';
@@ -3229,6 +3250,95 @@ function multiEraseCrosshair() {
     multiCtx.putImageData(multiChartSnapshot, 0, 0);
   }
 }
+/* #RADEX-254, оператор: «сделай ещё выбор интервала мышкой на графике».
+   Shift + протяжка выделяет участок, окно графика становится им, и
+   заключение пересчитывается само — оно считается по видимому окну. */
+let rangeSelActive = false;
+let rangeSelX0 = 0;
+let rangeSelX1 = 0;
+
+function rangeSelDraw() {
+  if (!multiChartSnapshot || !multiCtx || !multiHitState) return;
+  multiCtx.putImageData(multiChartSnapshot, 0, 0);
+  const { PADL, plotW, PADT, plotH } = multiHitState;
+  const a = Math.min(rangeSelX0, rangeSelX1), b = Math.max(rangeSelX0, rangeSelX1);
+  const x1 = Math.max(a, PADL), x2 = Math.min(b, PADL + plotW);
+  if (x2 <= x1) return;
+  multiCtx.save();
+  multiCtx.fillStyle = 'rgba(96,165,250,.18)';
+  multiCtx.fillRect(x1, PADT, x2 - x1, plotH);
+  multiCtx.strokeStyle = 'rgba(96,165,250,.55)';
+  multiCtx.lineWidth = 1;
+  multiCtx.strokeRect(x1 + 0.5, PADT + 0.5, x2 - x1 - 1, plotH - 1);
+  multiCtx.restore();
+}
+
+function rangeSelTime(x) {
+  const { minTime, maxTime, PADL, plotW } = multiHitState;
+  const frac = Math.min(1, Math.max(0, (x - PADL) / (plotW || 1)));
+  return minTime + frac * (maxTime - minTime);
+}
+
+function rangeSelApply() {
+  rangeSelActive = false;
+  if (!multiHitState) return;
+  const a = Math.min(rangeSelX0, rangeSelX1), b = Math.max(rangeSelX0, rangeSelX1);
+  if (b - a < 6) {
+    multiRedraw();
+    return;
+  }
+  let t1 = rangeSelTime(a), t2 = rangeSelTime(b);
+  if (!isFinite(t1) || !isFinite(t2) || t2 - t1 < 60) {
+    multiRedraw();
+    return;
+  }
+  if (dataRange) {
+    t1 = Math.max(t1, dataRange.min);
+    t2 = Math.min(t2, dataRange.max);
+    if (t2 - t1 < 60) {
+      multiRedraw();
+      return;
+    }
+  }
+  visibleRange = { min: t1, max: t2 };
+  viewLocked = true;
+  multiRedraw();
+}
+
+function multiBindRangeSelect(cv) {
+  const handleMouseDown = (e) => {
+    if (!e.shiftKey) return;
+    e.preventDefault();
+    const r = cv.getBoundingClientRect();
+    rangeSelX0 = rangeSelX1 = e.clientX - r.left;
+    rangeSelActive = true;
+    multiHideTooltip();
+  };
+
+  const handleMouseMove = (e) => {
+    if (!rangeSelActive) return;
+    const r = cv.getBoundingClientRect();
+    rangeSelX1 = e.clientX - r.left;
+    rangeSelDraw();
+  };
+
+  const handleMouseUp = (e) => {
+    if (rangeSelActive) rangeSelApply();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Escape' && rangeSelActive) {
+      rangeSelActive = false;
+      multiRedraw();
+    }
+  };
+
+  cv.addEventListener('mousedown', handleMouseDown);
+  document.addEventListener('mousemove', handleMouseMove);
+  document.addEventListener('mouseup', handleMouseUp);
+  document.addEventListener('keydown', handleKeyDown);
+}
+
 function multiDrawCrosshair(mx, padTop, plotH) {
   if (!multiChartSnapshot || !multiCtx) return;
   multiCtx.putImageData(multiChartSnapshot, 0, 0);   /* стереть прошлую линию */
@@ -4330,11 +4440,20 @@ function bindTestImport() {
         return;
       }
 
-      /* #RADEX-244: имя замера — из имени файла, без расширения и не длиннее
-         RADON_LABEL_MAX (24). Плата всё равно отфильтрует его по белому списку
-         A-Za-z0-9-_ (radon_label_sanitize), поэтому кириллицу и пробелы здесь
-         не транслитерируем: одно правило фильтрации, и оно на плате. */
-      const named = file.name.replace(/\.[^.]*$/, '').slice(0, 24).trim();
+      /* #RADEX-255: имя ТРАНСЛИТЕРИРУЕТСЯ здесь, а не отдаётся плате как есть.
+         Прежнее решение («одно правило фильтрации, и оно на плате») не работало:
+         кириллица уходит в URL как %D0%9F…, плата %-последовательности НЕ
+         декодирует, а раздутая строка не влезает в её val[32] — httpd_query_key_value
+         возвращает TRUNC, и метка терялась целиком. Проверено на живой плате:
+         «PD22209010007_Подвал (11).csv» дал замер с пустым именем. */
+      const RU = {а:'a',б:'b',в:'v',г:'g',д:'d',е:'e',ё:'e',ж:'zh',з:'z',и:'i',й:'y',к:'k',л:'l',
+        м:'m',н:'n',о:'o',п:'p',р:'r',с:'s',т:'t',у:'u',ф:'f',х:'h',ц:'c',ч:'ch',ш:'sh',щ:'sch',
+        ъ:'',ы:'y',ь:'',э:'e',ю:'yu',я:'ya'};
+      const named = file.name.replace(/\.[^.]*$/, '').toLowerCase()
+        .replace(/[а-яё]/g, ch => RU[ch] !== undefined ? RU[ch] : '')
+        .replace(/[^a-z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 24).replace(/_+$/, '');
       let url = '/api/tests/import';
       if (named) {
         url += '?label=' + encodeURIComponent(named);

@@ -329,8 +329,18 @@ td:first-child{white-space:nowrap}
 .assess-range .card-title{margin-bottom:var(--sp-2)}
 /* #RADEX-228: имя замера — отделено линией от кнопок «Новый замер»/«Сброс»:
    это про сохранение, а не про управление ходом замера. */
-.test-name{margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line);margin-bottom:0}
-.test-name input{max-width:320px}
+/* #RADEX-235: разделительная линия убрана вместе с ярусами — управление замером
+   теперь одна строка, отделять внутри неё нечего. */
+/* #RADEX-235: весь ряд управления замером — одна строка: «Новый замер», «Сброс»,
+   имя, «Сохранить замер». Поле тянется, кнопки держат свою ширину и не сжимаются
+   до «Сохр…»; на узком экране строка переносится, и элементы встают столбиком
+   сами — отдельная мобильная раскладка не нужна. */
+.test-controls{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center}
+.test-controls input{flex:1 1 200px;max-width:320px;margin-bottom:0}
+.test-controls button{flex:0 0 auto}
+/* #RADEX-235: то же для строки импорта на «Графиках» — там поле имени и кнопка
+   «Импортировать» стояли в btn-row, где поле растягивалось на всю ширину. */
+#tests-list-card .btn-row input[type="text"]{flex:1 1 200px;max-width:320px;margin-bottom:0}
 /* #RADEX-227: вывод архивного заключения на «Графиках». Собственная карточка
    заключения внутри — та же палитра состояний, что у текущего замера
    (.assessment-card .complies/.exceeds/…), но своя, отдельная от него. */

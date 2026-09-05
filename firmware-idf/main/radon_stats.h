@@ -256,8 +256,12 @@ int radon_stats_tests_list_json(char *buf, size_t len);
    файл /data/test_<start>.csv, а не общая история. Формат ответа тот же, что у
    radon_stats_assess_json. Возвращает длину строки, -1 при ошибке (в том числе
    если start не задан). */
+/* #RADEX-238: from/to — необязательный интервал ВНУТРИ замера. from=0 значит
+   «от начала замера», to=0 — «по последнюю запись файла». Граница раньше начала
+   замера подтягивается к нему: за его пределами в файле данных всё равно нет. */
 int radon_stats_assess_test_json(char *buf, size_t len, time_t start,
-                                 float c_rl, float u_d, bool restricted);
+                                 float c_rl, float u_d, bool restricted,
+                                 time_t from, time_t to);
 
 /* #RADEX-228: имя (метка) замера. Хранится отдельным реестром /data/labels.csv,
    а НЕ в имени файла: SPIFFS собран с CONFIG_SPIFFS_OBJ_NAME_LEN=32, а

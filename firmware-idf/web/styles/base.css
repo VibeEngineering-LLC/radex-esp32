@@ -406,3 +406,21 @@ td:first-child{white-space:nowrap}
 /* #RADEX-223: таблица внутри карточки — без внешних отступов, иначе она отходит
    от собственного заголовка сильнее, чем от соседней карточки. */
 .periods-card table{margin-top:var(--sp-2)}
+
+/* #RADEX-238: разбор решения по методу под заключением. Формулы с подстановкой
+   чисел — моноширинными плашками: в них важно посимвольное чтение, а
+   пропорциональный шрифт сбивает выравнивание знаков и степеней. */
+/* Имя замера с датой не должно обрезаться до «podval-god ч..»: источник данных
+   в заключении важнее пары сэкономленных пикселей, а строка и так переносится. */
+#assess-src{min-width:200px;max-width:300px}
+.method-check{margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line)}
+.mc-head{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.04em;opacity:.75;margin-bottom:var(--sp-2)}
+.mc-vals{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--sp-3)}
+.mc-chip{border:1px solid var(--line);border-radius:var(--radius);padding:2px 8px;font-size:var(--fs-xs);white-space:nowrap}
+.mc-rule{font-size:var(--fs-xs);font-weight:600;margin-top:var(--sp-2)}
+.mc-calc{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--fs-xs);
+  border:1px solid var(--line);border-radius:var(--radius);padding:4px 8px;margin-top:4px;
+  overflow-x:auto;white-space:nowrap}
+.mc-off{opacity:.6;font-style:italic;white-space:normal}
+.mc-total{margin-top:var(--sp-3);font-size:var(--fs-xs);font-weight:600}
+.mc-note{margin-top:var(--sp-2);font-size:var(--fs-xs);opacity:.7}

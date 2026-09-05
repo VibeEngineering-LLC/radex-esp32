@@ -71,6 +71,10 @@ static uint32_t calculate_median(int32_t *arr, size_t count)
     }
 }
 
+/* #RADEX-19: цикл, определённый ДО перезагрузки (NVS "cyauto"). 0 — такого
+   ещё не было. Отвечает вместо своих промежутков, пока их меньше трёх. */
+static uint32_t s_auto_saved = 0;
+
 // Вспомогательная функция для проверки стабильности
 static bool is_cycle_stable(void)
 {
@@ -86,6 +90,68 @@ static bool is_cycle_stable(void)
     }
     
     return (last_three[0] == last_three[1]) && (last_three[1] == last_three[2]);
+}
+
+/* #RADEX-19: определённый цикл переживает перезагрузку. Промежутки между
+   сменами показания копятся в ОЗУ, а прибор меняет значение раз в 10-60
+   минут — на три промежутка нужны часы, и любая перепрошивка обнуляла
+   накопление: страница снова показывала «ещё не определён». Ключ NVS
+   "cyauto" отдельный от "cycle" (ручная уставка оператора) — это разные
+   величины, и смешивать их значило бы затирать выбор человека догадкой. */
+static uint32_t poll_cycle_load_auto(void)
+{
+    nvs_handle_t h;
+    uint32_t value;
+
+    if (nvs_open("radon", NVS_READONLY, &h) != ESP_OK) {
+        return 0;
+    }
+
+    if (nvs_get_u32(h, "cyauto", &value) != ESP_OK) {
+        nvs_close(h);
+        return 0;
+    }
+
+    nvs_close(h);
+
+    if (value < 1 || value > 240) {
+        return 0;
+    }
+
+    return value;
+}
+
+static void poll_cycle_save_auto(uint32_t minutes)
+{
+    nvs_handle_t h;
+
+    if (minutes < 1 || minutes > 240) {
+        return;
+    }
+
+    uint32_t current = poll_cycle_load_auto();
+    if (current == minutes) {
+        return;
+    }
+
+    if (nvs_open("radon", NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGW(TAG, "не удалось открыть NVS для сохранения цикла");
+        return;
+    }
+
+    esp_err_t err = nvs_set_u32(h, "cyauto", minutes);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+        if (err == ESP_OK) {
+            ESP_LOGI(TAG, "определённый цикл сохранён: %u мин", (unsigned)minutes);
+        } else {
+            ESP_LOGW(TAG, "не удалось сохранить цикл");
+        }
+    } else {
+        ESP_LOGW(TAG, "не удалось сохранить цикл");
+    }
+
+    nvs_close(h);
 }
 
 void poll_cycle_init(void)
@@ -114,6 +180,17 @@ void poll_cycle_init(void)
     interval_index = 0;
     last_update = 0;
     is_stable = false;
+
+    /* #RADEX-19: значение, определённое ДО перезагрузки. Своих промежутков ещё
+       нет (кольцо только что обнулено), поэтому до накопления показываем и
+       используем последнее известное — это честнее, чем «ещё не определён» на
+       плате, которая измеряет неделю. Как только накопятся свои три промежутка,
+       poll_cycle_minutes() начнёт считать по ним: сохранённое значение никуда не
+       подставляется, оно только отвечает, пока считать не по чему. */
+    s_auto_saved = poll_cycle_load_auto();
+    if (s_auto_saved != 0) {
+        ESP_LOGI(TAG, "цикл с прошлого запуска: %u мин", (unsigned)s_auto_saved);
+    }
 }
 
 bool poll_cycle_observe(time_t ts, float radon)
@@ -158,11 +235,21 @@ uint32_t poll_cycle_minutes(void)
     }
     
     if (interval_count < 3) {
-        return 0; // Не достаточно данных для оценки
+        /* #RADEX-19: своих промежутков ещё мало — отвечаем тем, что определили
+           до перезагрузки. Ноль здесь означал бы «прибор неизвестен», и опрос
+           уходил бы на дефолтные 10 минут даже на плате, измеряющей неделю. */
+        return s_auto_saved;
     }
-    
+
     uint32_t median = calculate_median(intervals, interval_count);
-    return find_closest_cycle(median);
+    uint32_t cycle = find_closest_cycle(median);
+    /* Сохраняем ТОЛЬКО устоявшееся значение: запись при каждом промежутке
+       изнашивала бы NVS, а на первых трёх точках медиана ещё пляшет. */
+    if (cycle != 0 && is_cycle_stable()) {
+        poll_cycle_save_auto(cycle);
+        s_auto_saved = cycle;
+    }
+    return cycle;
 }
 
 uint32_t poll_cycle_next_delay_ms(void)

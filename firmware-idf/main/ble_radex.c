@@ -355,6 +355,15 @@ bool ble_radex_set_target(const char *mac_str)
     for (uint8_t i = 0; i < s_found_n; i++)
         if (memcmp(s_found[i].addr, a, sizeof(a)) == 0) atype = s_found[i].atype;
     target_save(a, atype);
+    /* #RADEX-89: скан останавливаем ЯВНО. Дальше идёт перезагрузка, и радио
+       освободилось бы и так, но между выбором прибора и рестартом остаётся
+       окно, где скан продолжает занимать радио уже без всякой цели: искать
+       больше нечего. Флаг снимаем вместе с командой — иначе состояние в
+       /api/scan продолжало бы утверждать, что поиск идёт. */
+    if (s_scanning) {
+        esp_ble_gap_stop_scanning();
+        s_scanning = false;
+    }
     ESP_LOGW(TAG, "прибор задан: %02X:%02X:%02X:%02X:%02X:%02X — перезагрузка",
              a[0],a[1],a[2],a[3],a[4],a[5]);
     return true;
@@ -364,6 +373,18 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 {
     switch (event) {
         case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
+            /* #RADEX-89: статус применения параметров проверяем ЯВНО. Раньше он
+               молча игнорировался, и отказ («No random address yet» на чистом
+               старте, когда случайный адрес контроллером ещё не сгенерирован)
+               выглядел как успех: скан всё равно поднимался, но на умолчаниях
+               контроллера, а не на заданных интервале/окне/отсеве повторов.
+               Сам тип адреса (own_addr_type) НЕ трогаем — он входит в
+               доказанную серию соединения (#RADEX-145), менять его без замера
+               на свободной плате нельзя. */
+            if (param->scan_param_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                ESP_LOGW(TAG, "параметры скана НЕ применены (status=%d) — контроллер работает на умолчаниях",
+                         (int) param->scan_param_cmpl.status);
+            }
             if (s_scanning) esp_ble_gap_start_scanning(0);   // 0 = до остановки
             break;
         case ESP_GAP_BLE_SCAN_RESULT_EVT: {
@@ -456,6 +477,17 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             s_reconnect_delay_ms = RADEX_RECONNECT_MIN_MS;   /* #RADEX-84: связь есть — пауза с нуля */
             s_open_tick = xTaskGetTickCount();
             s_handle_cursor = 0;
+            /* #RADEX-89: связь есть — искать больше нечего. Скан и соединение
+               делят одно радио (интервал 0x50 при окне 0x30 — это 60 % времени
+               на приём рекламы), и оставленный включённым поиск отнимает эфир у
+               уже установленного соединения. В штатном пути скан к этому моменту
+               не идёт (цель известна из NVS, открываемся сразу), но после
+               «Искать приборы заново» и на первом подключении — идёт. */
+            if (s_scanning) {
+                esp_ble_gap_stop_scanning();
+                s_scanning = false;
+                ESP_LOGI(TAG, "поиск в эфире остановлен: прибор подключён");
+            }
             ESP_LOGI(TAG, "соединение установлено, conn_id=%d", s_conn_id);
             esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_CONN_HDL0, ESP_PWR_LVL_P20);
             break;

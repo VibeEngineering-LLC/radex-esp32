@@ -2026,3 +2026,51 @@ time_t radon_stats_import_commit_as_test(int *rows_out) {
     radon_stats_unlock();
     return first;
 }
+
+/* #RADEX-234, оператор: «и сохранённое нужно иметь возможность удалять».
+   Удаляет файл замера и его имя. Идущий замер не трогает: для него есть
+   «Сброс», и удалить его этим путём значило бы обойти подтверждение. */
+bool radon_stats_test_delete(time_t start)
+{
+    if (!mounted || start <= 0) {
+        return false;
+    }
+
+    /* #RADEX-234: сравнение с ЭФФЕКТИВНЫМ началом, а не с явной отметкой NVS.
+       Замер идёт по умолчанию, от первой записи истории, и явной отметки у него
+       нет — с radon_stats_test_start() проверка пропускала удаление ИДУЩЕГО
+       замера (поймано на плате: HTTP 200 и пустой список вместо отказа).
+       Критерий обязан совпадать с тем, по которому список рисует «идёт сейчас»
+       (radon_stats_tests_list_json_locked), иначе интерфейс говорит одно, а
+       плата делает другое. */
+    time_t active = radon_stats_test_start_eff();
+    if (active > 0 && active == start) {
+        ESP_LOGW(TAG, "попытка удалить идущий замер отклонена");
+        return false;
+    }
+
+    char tf[48];
+    radon_stats_test_file(start, tf, sizeof(tf));
+    if (tf[0] == '\0') {
+        return false;
+    }
+
+    if (!radon_stats_lock(RS_LOCK_MS_WRITE)) {
+        return false;
+    }
+
+    int result = remove(tf);
+
+    radon_stats_unlock();
+    radon_stats_test_label_set(start, "");
+    radon_stats_bump_generation();
+
+    ESP_LOGW(TAG, "замер %lld удалён (файл %s)", (long long)start, tf);
+
+    /* Файла могло не быть — это не отказ: имя всё равно снято, а замер и так
+       исчез из списка. Проверять errno здесь нельзя: между remove() и этой
+       строкой вызывались снятие замка и работа с реестром, любая из них могла
+       его переписать (и <errno.h> в модуле не подключён). */
+    (void)result;
+    return true;
+}

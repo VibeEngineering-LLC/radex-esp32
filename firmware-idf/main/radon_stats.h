@@ -276,6 +276,11 @@ bool radon_stats_test_label_set(time_t start, const char *label);
    записей попало в файл. */
 time_t radon_stats_test_snapshot(uint32_t *points_out);
 
+/* #RADEX-234: удалить сохранённый замер — файл и имя. Идущий замер не удаляет
+   (возвращает false): для него есть «Сброс», и обходить его подтверждение
+   отдельной кнопкой в списке нельзя. */
+bool radon_stats_test_delete(time_t start);
+
 /* Содержимое ОДНОГО файла замера в формате точек — тот же JSON, что отдаёт
    /api/history/range, для переиспользования на странице (тот же парсер точек).
    start — epoch, которым назван файл (id замера). Возвращает длину либо -1,

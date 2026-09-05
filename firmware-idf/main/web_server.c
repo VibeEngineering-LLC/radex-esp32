@@ -292,6 +292,50 @@ static esp_err_t handle_stats(httpd_req_t *req) {
    истории (#RADEX-40). Границы необязательны: ноль означает «без ограничения».
    Настройки норматива и неопределённости берутся те же, что и для /api/stats —
    иначе одно и то же измерение получало бы разные заключения. */
+/* #RADEX-234: POST /api/tests/delete — удалить сохранённый замер. Тело —
+   epoch замера строкой. Идущий замер плата не удаляет (см.
+   radon_stats_test_delete): для него есть «Сброс» с подтверждением. */
+static esp_err_t handle_test_delete(httpd_req_t *req)
+{
+    char body[24] = {0};
+    int len = req->content_len;
+    if (len <= 0 || len >= (int)sizeof(body)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело: epoch замера");
+        return ESP_FAIL;
+    }
+
+    int recv_len = httpd_req_recv(req, body, len);
+    if (recv_len <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело: epoch замера");
+        return ESP_FAIL;
+    }
+
+    body[recv_len] = '\0';
+    long long start = atoll(body);
+    if (start <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело: epoch замера");
+        return ESP_FAIL;
+    }
+
+    if (!radon_stats_test_delete((time_t)start)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+            "замер не удалён: идущий замер удалять нельзя, для него есть «Сброс»");
+        return ESP_FAIL;
+    }
+
+    char resp[64];
+    int resp_len = snprintf(resp, sizeof(resp), "{\"ok\":true,\"start\":%lld}", (long long)start);
+    if (resp_len < 0 || resp_len >= (int)sizeof(resp)) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, resp, resp_len);
+
+    return ESP_OK;
+}
+
 /* #RADEX-228: POST /api/tests/save — «Сохранить замер». Тело — имя (может
    быть пустым). Снимает идущий замер в его файл и подписывает: у неявного
    замера файла нет, и без снимка сохранять было бы нечего. */
@@ -1485,6 +1529,7 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/tests/points", .method = HTTP_GET, .handler = handle_tests_points },
     { .uri = "/api/tests/label", .method = HTTP_POST, .handler = handle_test_label },   /* #RADEX-228 */
     { .uri = "/api/tests/save",  .method = HTTP_POST, .handler = handle_test_save },   /* #RADEX-228 */
+    { .uri = "/api/tests/delete", .method = HTTP_POST, .handler = handle_test_delete },   /* #RADEX-234 */
     { .uri = "/healthcheck",   .method = HTTP_GET,  .handler = handle_health },
 };
 #define URI_COUNT (sizeof(s_uris) / sizeof(s_uris[0]))

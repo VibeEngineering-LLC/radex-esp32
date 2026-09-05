@@ -221,37 +221,37 @@
        линией, а не собственной карточкой. -->
   <div class="card test-card">
   <div id="test_state" class="test-state"></div>
-  <div class="btn-row">
+  <!-- #RADEX-235, оператор: «а лучше это все в линию». Управление замером — одно
+       действие в четыре шага: начать заново, сбросить, назвать, сохранить. Раньше
+       это были три яруса (кнопки, разделительная линия, поле с кнопкой под ним),
+       и глазу приходилось собирать их обратно. Подпись поля убрана в placeholder:
+       отдельная строка ради слова «Имя замера» и есть та самая лишняя высота.
+       aria-label оставлен — для чтения с экрана подпись нужна. -->
+  <div class="test-controls">
     <!-- #RADEX-150: замер идёт по умолчанию (с первой записи истории), поэтому
          кнопка означает не «включить», а «начать заново с этого момента».
          Разметка и methodTick() задают ОДИН И ТОТ ЖЕ текст: расхождение между
          ними давало бы «Начать замер» до первого тика и другую надпись после. -->
     <button id="btn_test_start" class="btn-primary">Новый замер</button>
     <button id="btn_test_reset" class="btn-danger">Сброс</button>
+    <!-- #RADEX-228, оператор: «тут сделай кнопку сохранить замер и поля ввода
+         префикса». Имя не входит в имя файла: SPIFFS собран с
+         CONFIG_SPIFFS_OBJ_NAME_LEN=32, а «/test_1788463052.csv» — уже 20
+         символов; плюс имя файла разбирается обратно в epoch. Имя живёт
+         отдельным реестром на плате (/data/labels.csv) и показывается в списке
+         «Сохранённые замеры» на «Графиках». -->
+    <input type="text" id="test-label" maxlength="24"
+           placeholder="имя замера, например kvartira-1" aria-label="имя текущего замера">
+    <button type="button" id="btn-test-save">Сохранить замер</button>
   </div>
+  <div class="sub" id="test-label-note" style="font-size:var(--fs-xs);margin-top:6px">
+    латиница, цифры, дефис и подчёркивание; имя видно в списке «Сохранённые замеры»</div>
 
   <!-- #RADEX-227, оператор: «оценку по архивным записям перенеси на вкладку
        графики. Эта оценка будет выводиться по выбранным файлам и не будет
        связана с текущим замером». Блок оценки по интервалу истории уехал на
        «Графики» целиком — здесь остаётся только текущий замер, и карточка
        заключения больше НИКОГДА не подменяется архивными числами. -->
-
-  <!-- #RADEX-228, оператор: «тут сделай кнопку сохранить замер и поля ввода
-       префикса». Имя не входит в имя файла: SPIFFS собран с
-       CONFIG_SPIFFS_OBJ_NAME_LEN=32, а «/test_1788463052.csv» — уже 20
-       символов; плюс имя файла разбирается обратно в epoch. Имя живёт
-       отдельным реестром на плате (/data/labels.csv) и показывается в списке
-       «Сохранённые замеры» на «Графиках». -->
-      <div class="form-group test-name">
-        <label for="test-label">Имя замера</label>
-        <input type="text" id="test-label" maxlength="24"
-               placeholder="например kvartira-1" aria-label="имя текущего замера">
-        <div class="btn-row" style="margin-top:8px">
-          <button type="button" id="btn-test-save">Сохранить замер</button>
-        </div>
-        <div class="sub" id="test-label-note" style="font-size:var(--fs-xs);margin-top:6px">
-          латиница, цифры, дефис и подчёркивание; имя видно в списке «Сохранённые замеры»</div>
-      </div>
   </div>
 
     <div class="card method-params">
@@ -746,6 +746,13 @@
           <button id="multi-add-range" type="button">Добавить интервал</button>
 
           <button id="multi-clear" type="button">Очистить</button>
+        </div>
+        <!-- #RADEX-233, оператор: «тут бардак». В одной строке стояли вперемешку
+             ДВА разных действия: чем набирать ряды (интервал, добавить, очистить)
+             и как их показывать (склейка, сглаживание). Разнесены по строкам —
+             набор источников выше, вид ниже. -->
+        <div class="chart-controls">
+          <span class="sub" style="align-self:center">показ:</span>
           <label class="sub" style="display:flex;align-items:center;gap:6px">
             <input type="checkbox" id="multi-merge" style="width:auto;min-height:0"> Объединить в один ряд
           </label>
@@ -802,6 +809,15 @@
         <div id="multi-metric-legend" class="sub" style="margin-top:4px;font-size:var(--fs-xs)"></div>
         <div class="sub" id="multi-hint" style="margin-top:6px;font-size:var(--fs-xs)">Колесо мыши — масштаб по времени, перетаскивание — сдвиг, двойное нажатие — сброс, значок ⛶ — во весь экран.</div>
       </div>
+      <!-- #RADEX-233, оператор: «вообще пересмотри вкладку. тут бардак».
+           Таблица рядов стояла ГОЛОЙ между карточками — единственный блок
+           вкладки без заголовка и без карточки, да ещё и оторванный от графика,
+           который описывает. Теперь она сразу под графиком и подписана: это его
+           легенда в числах, а не отдельная сущность. -->
+      <div class="card" id="multi-stats-card">
+        <div class="card-title">Ряды на графике</div>
+        <table id="multi-stats"></table>
+      </div>
       <!-- #RADEX-102: список замеров с флеш — каждый читается через свой файл
            (/api/tests, /api/tests/points?start=), клик добавляет его рядом
            тем же путём, что «Вся история платы» (multiPutSeries). -->
@@ -844,7 +860,6 @@
         </div>
         <div id="assess-arch-out" class="assess-arch-out sub">интервал или замер не выбран</div>
       </div>
-      <table id="multi-stats"></table>
       <!-- #RADEX-223, оператор: «заголовок сохраненные замеры не на месте».
            Перенесённая сюда таблица средних (#RADEX-220) была вставлена МЕЖДУ
            карточкой «Сохранённые замеры» и статистикой рядов #multi-stats,
@@ -2393,6 +2408,17 @@ function multiRedraw() {
     return PADT + plotH - ((v - rng[0]) / (rng[1] - rng[0] || 1)) * plotH;
   };
 
+  /* #RADEX-233, оператор: «кривая вылезла за график». Причина не в масштабе:
+     inView() НАМЕРЕННО добавляет по одной точке за каждым краем окна, чтобы
+     линия входила в кадр, а не обрывалась на границе, — и отрезок к этой точке
+     уходит выше верхней рамки. Правильное лечение — обрезка области рисования:
+     она держит в рамке ЛЮБУЮ линию, включая полосу интервала и будущие ряды,
+     а подгонка масштаба чинила бы один случай из класса. */
+  multiCtx.save();
+  multiCtx.beginPath();
+  multiCtx.rect(PADL, PADT, plotW, plotH);
+  multiCtx.clip();
+
   // Рисуем серии — по одной линии на КАЖДУЮ включённую величину (#RADEX-110)
   if (mergeChecked) {
     /* Цвет — по величине (ряды здесь уже не различимы, они склеены в один);
@@ -2532,6 +2558,10 @@ function multiRedraw() {
         {normative: norm, uInst: uInst, avoidBox: meanBadgeBox});
     }
   }
+
+  /* #RADEX-233: снимаем обрезку. Всё, что рисуется ниже (снимок кадра для
+     crosshair), обязано видеть холст целиком. */
+  multiCtx.restore();
 
   /* #RADEX-123: снимок геометрии ИМЕННО этого кадра — minTime/maxTime/PADL/
      plotW те же, что применялись выше к xAt()/yAtMetric(); mousemove-
@@ -2885,6 +2915,30 @@ async function multiLoadTestsList() {
       assessBtn.type = 'button';
       assessBtn.textContent = 'Оценить';
       assessBtn.addEventListener('click', () => archAssessTest(item.start, when, item.label || ''));
+      /* #RADEX-234, оператор: «и сохранённое нужно иметь возможность удалять».
+         У идущего замера кнопки нет вовсе — плата его всё равно не удалит, а
+         кнопка, которая заведомо ответит отказом, хуже её отсутствия. */
+      let delBtn = null;
+      if (!item.active) {
+        delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn-danger';
+        delBtn.textContent = 'Удалить';
+        delBtn.addEventListener('click', async () => {
+          const what = item.label ? `«${item.label}»` : `от ${when}`;
+          if (!confirm(`Удалить замер ${what}? Файл с ${item.points} измерениями будет стёрт с флеш-памяти платы безвозвратно.`)) return;
+          delBtn.disabled = true;
+          try {
+            const r = await fetch('/api/tests/delete', {method: 'POST', body: String(item.start)});
+            if (!r.ok) { alert('Плата не удалила замер (HTTP ' + r.status + ')'); return; }
+            await multiLoadTestsList();
+          } catch (e) {
+            alert('Не удалось удалить замер: ' + e.message);
+          } finally {
+            delBtn.disabled = false;
+          }
+        });
+      }
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = 'Добавить рядом';
@@ -2910,6 +2964,7 @@ async function multiLoadTestsList() {
       acts.className = 'btn-row';
       acts.appendChild(assessBtn);
       acts.appendChild(btn);
+      if (delBtn) acts.appendChild(delBtn);
       row.appendChild(acts);
       box.appendChild(row);
     });
@@ -4424,8 +4479,17 @@ function bindTestImport() {
       }
 
       const data = await response.json();
-      const dateStr = new Date(data.start * 1000).toLocaleString('ru-RU');
-      let msg = `импортировано строк: ${data.rows}; замер от ${dateStr}`;
+      /* #RADEX-233: плата отвечает `{ok,start,rows,label}`, но подставлять поля
+         не глядя нельзя — на экране уже выходило «импортировано строк:
+         undefined; замер от Invalid Date». Отсутствующее поле означает, что
+         ответ не тот, и человеку надо сказать это, а не показывать пустоту. */
+      const rows = Number(data && data.rows);
+      const start = Number(data && data.start);
+      if (!isFinite(rows) || !isFinite(start) || start <= 0) {
+        note.textContent = 'плата приняла файл, но ответила неожиданно — проверьте список замеров';
+        return;
+      }
+      let msg = `импортировано строк: ${rows}; замер от ${new Date(start * 1000).toLocaleString('ru-RU')}`;
       if (data.label) {
         msg += ` · имя «${data.label}»`;
       }

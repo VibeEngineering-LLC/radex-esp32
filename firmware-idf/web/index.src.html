@@ -231,8 +231,12 @@
          кнопка означает не «включить», а «начать заново с этого момента».
          Разметка и methodTick() задают ОДИН И ТОТ ЖЕ текст: расхождение между
          ними давало бы «Начать замер» до первого тика и другую надпись после. -->
-    <button id="btn_test_start" class="btn-primary">Новый замер</button>
-    <button id="btn_test_reset" class="btn-danger">Сброс</button>
+    <!-- #RADEX-200 (Цапалов, замечание 9): «Начало теста / Завершение теста».
+         Завершение — СОСТОЯНИЕ, а не удаление: файл замера и его заключение
+         остаются, растёт только общая история. Удалить замер можно в перечне
+         на «Графиках» (#RADEX-234) — деструктивной кнопки здесь больше нет. -->
+    <button id="btn_test_start" class="btn-primary">Начало теста</button>
+    <button id="btn_test_finish">Завершение теста</button>
     <!-- #RADEX-228, оператор: «тут сделай кнопку сохранить замер и поля ввода
          префикса». Имя не входит в имя файла: SPIFFS собран с
          CONFIG_SPIFFS_OBJ_NAME_LEN=32, а «/test_1788463052.csv» — уже 20
@@ -4972,8 +4976,20 @@ async function methodTick() {
        него надпись «замер начат тогда-то» была бы утверждением, которого никто
        не делал (#AH-1: то, что взято из умолчания, не выдаём за действие). */
     const testState = document.getElementById('test_state');
-    const running = !!statsData.test.started;
-    if (running) {
+    /* #RADEX-200: три состояния вместо двух. finished приходит true, когда в
+       NVS стоит отметка конца; started при этом остаётся true — тест
+       существует, просто закрыт. Порядок ветвей важен: завершённый тест тоже
+       «начат», и проверка на него идёт первой. */
+    const finished = !!statsData.test.finished;
+    const running = !!statsData.test.started && !finished;
+    if (finished) {
+      const dEnd = new Date(statsData.test.end * 1000).toLocaleDateString('ru-RU');
+      const dStart = new Date(statsData.test.start * 1000).toLocaleDateString('ru-RU');
+      const dn = assess.days;
+      const w = (dn % 10 === 1 && dn % 100 !== 11) ? 'сутки' : 'суток';
+      testState.textContent = `Тест завершён ${dEnd} — шёл ${dn} ${w}, с ${dStart}`;
+      testState.className = 'test-state';
+    } else if (running) {
       const since = statsData.test.explicit
         ? `начат ${new Date(statsData.test.start * 1000).toLocaleDateString('ru-RU')}`
         : 'по всем накопленным данным, с первой записи истории';
@@ -5004,22 +5020,32 @@ async function methodTick() {
        этого момента». Та же строка стоит в разметке (см. #btn_test_start),
        чтобы до первого тика не мелькала другая. */
     const btnStart = document.getElementById('btn_test_start');
-    const btnReset = document.getElementById('btn_test_reset');
-    if (btnStart && btnReset) {
-      btnStart.textContent = 'Новый замер';
+    const btnFinish = document.getElementById('btn_test_finish');
+    if (btnStart && btnFinish) {
+      btnStart.textContent = 'Начало теста';
       /* Классы берём ТОЛЬКО из архива стилей: btn-primary и btn-danger. Пустой
          класс даёт базовый вид кнопки — им и обозначается второстепенное
          действие. Выдуманный btn-secondary правил не имеет, и кнопка с ним
          осталась бы без оформления (тот же класс дефекта, что #RADEX-83). */
       btnStart.className = running ? '' : 'btn-primary';
-      /* «Сброс» остаётся btn-danger ВСЕГДА: он стирает историю показаний в любом
-         состоянии, и опасное действие не должно выглядеть безобидным, пока замер
-         не идёт. Меняется только то, какая кнопка главная. */
-      btnStart.title = 'Отсчёт замера начнётся заново с текущего момента';
-      /* #RADEX-102: «Сброс» удаляет ТОЛЬКО файл текущего замера, общая история
-         показаний остаётся — подсказка обязана говорить именно это, иначе она
-         пугает потерей того, что не теряется. */
-      btnReset.title = 'Удалить файл текущего замера (общая история останется)';
+      /* #RADEX-200, пункт «сброс невозможен без завершения теста»: пока идёт
+         ОТМЕЧЕННЫЙ человеком тест, начать новый нельзя — сначала завершить.
+         Замер, идущий по умолчанию (explicit=false), этим не связан: его никто
+         не начинал, и требовать его завершения не за что. */
+      const explicitRunning = running && !!statsData.test.explicit;
+      btnStart.disabled = explicitRunning;
+      btnStart.title = explicitRunning
+        ? 'Сначала завершите текущий тест'
+        : 'Отсчёт теста начнётся с текущего момента';
+      /* Завершать нечего, пока нет ни одного измерения, и нечего повторно —
+         у уже завершённого. btn-danger не ставим вовсе: завершение ничего не
+         удаляет, и пугать красным нечем (удаление живёт в перечне замеров). */
+      const canFinish = !!statsData.test.started && !finished;
+      btnFinish.className = canFinish ? 'btn-primary' : '';
+      btnFinish.disabled = !canFinish;
+      btnFinish.title = canFinish
+        ? 'Закрыть тест: данные останутся, заключение перестанет меняться'
+        : (finished ? 'Тест уже завершён' : 'Измерений ещё нет');
     }
 
 
@@ -5031,7 +5057,7 @@ async function methodTick() {
 document.getElementById('btn_test_start').addEventListener('click', async () => {
   /* #RADEX-150: замер идёт всегда, поэтому подтверждение спрашивается ВСЕГДА —
      нажатие отсекает от оценки всё накопленное до этого момента. */
-  if (!confirm('Начать новый замер с текущего момента? Прежние данные останутся в файле истории, но в оценку больше не войдут.')) return;
+  if (!confirm('Начать тест с текущего момента? Прежние данные останутся в файле истории, но в оценку больше не войдут.')) return;
 
   try {
     const btn = document.getElementById('btn_test_start');
@@ -5242,30 +5268,32 @@ async function ntpRefresh() {
   });
 })();
 
-document.getElementById('btn_test_reset').addEventListener('click', async () => {
-  /* #RADEX-102: radon_stats_reset() с 30.08 удаляет ТОЛЬКО файл текущего
-     замера — общая история для «Показаний»/«Графиков» больше не стирается.
-     Текст диалога отставал от факта: до этой правки он пугал потерей ВСЕЙ
-     истории, хотя пропадал только текущий замер. */
-  if (!confirm('Сбросить текущий замер? Файл этого замера удалится безвозвратно, но общая история показаний останется.')) return;
+document.getElementById('btn_test_finish').addEventListener('click', async () => {
+  /* #RADEX-200: подтверждение спрашивается не про потерю данных (её нет), а
+     про необратимость СОСТОЯНИЯ: продолжить закрытый тест нельзя, дальнейшие
+     показания в него уже не войдут. */
+  if (!confirm('Завершить тест? Данные сохранятся, заключение будет посчитано по периоду от начала до этого момента и меняться перестанет. Продолжить этот же тест после завершения нельзя.')) return;
 
   try {
-    const btnR = document.getElementById('btn_test_reset');
+    const btnR = document.getElementById('btn_test_finish');
     if (btnR) btnR.classList.add('busy');
     const response = await fetch('/api/test', {
       method: 'POST',
       headers: {'Content-Type': 'text/plain'},
-      body: 'reset'
+      body: 'finish'
     }).finally(() => { if (btnR) btnR.classList.remove('busy'); });
     const result = await response.json();
     if (!result.ok) {
       alert(result.error);
     } else {
-      if (typeof multiLoadTestsList === 'function') multiLoadTestsList();   /* #RADEX-102: файл текущего замера удалён */
-      updateAllData();   /* #RADEX-150: после сброса замер снова идёт по всей истории — показать сразу */
+      /* #RADEX-200: завершение делает СНИМОК замера — у теста, шедшего по
+         умолчанию, файл появляется только сейчас, и перечень обязан его
+         увидеть. Заодно замер перестаёт быть активным и становится удаляемым. */
+      if (typeof multiLoadTestsList === 'function') multiLoadTestsList();
+      updateAllData();
     }
   } catch (error) {
-    console.error('Ошибка при сбросе замера:', error);
+    console.error('Ошибка при завершении теста:', error);
   }
 });
 

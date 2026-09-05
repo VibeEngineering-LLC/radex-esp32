@@ -622,9 +622,81 @@ void wifi_manager_init(void)
              wifi_config.sta.ssid, FALLBACK_SEC);
 }
 
+/* #RADEX-186: ждём АДРЕС на STA-интерфейсе, а не бит события. В режиме портала
+   wifi_event_handler не регистрируется вовсе (wifi_manager_init ставит его
+   только на ветке STA), и ожидание WIFI_CONNECTED_BIT там не кончилось бы
+   никогда — плата подключилась бы, а Improv отрапортовал бы отказ. */
+static bool wifi_manager_provision_try(const char *ssid, const char *pass,
+                                       char *ip_out, size_t ip_sz,
+                                       uint32_t timeout_ms);
+static bool wifi_wait_ip(char *ip_out, size_t ip_sz, uint32_t timeout_ms);
+
+/* Сеть проверена — только теперь она попадает в NVS. Записать раньше значило бы
+   после ближайшей перезагрузки увести плату в сеть, которой нет. Пароль ложится
+   открытым текстом — тот же компромисс, что в портале (handle_setup_connect). */
+static bool wifi_provision_commit(const char *ssid, const char *pass,
+                                  char *ip_out, size_t ip_sz, uint32_t timeout_ms)
+{
+    if (!wifi_wait_ip(ip_out, ip_sz, timeout_ms)) {
+        ESP_LOGW(TAG, "Improv: сеть «%s» не поднялась", ssid);
+        return false;
+    }
+    nvs_handle_t nvs;
+    if (nvs_open("wifi", NVS_READWRITE, &nvs) == ESP_OK) {
+        nvs_set_str(nvs, "ssid", ssid);
+        nvs_set_str(nvs, "pass", pass != NULL ? pass : "");
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    ESP_LOGI(TAG, "Improv: сеть «%s» принята, адрес %s", ssid, ip_out ? ip_out : "?");
+    return true;
+}
+
+static bool wifi_wait_ip(char *ip_out, size_t ip_sz, uint32_t timeout_ms)
+{
+    esp_netif_t *nif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (nif == NULL) return false;
+    for (uint32_t waited = 0; waited < timeout_ms; waited += 250) {
+        esp_netif_ip_info_t info;
+        if (esp_netif_get_ip_info(nif, &info) == ESP_OK && info.ip.addr != 0) {
+            if (ip_out != NULL && ip_sz > 0)
+                snprintf(ip_out, ip_sz, IPSTR, IP2STR(&info.ip));
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    return false;
+}
+
 bool wifi_is_connected(void)
 {
     return (xEventGroupGetBits(s_wifi_events) & WIFI_CONNECTED_BIT) != 0;
+}
+
+/* #RADEX-186 шаг Б: сеть, пришедшая по Improv Serial. Обоснование и контракт —
+   в net_config.h. Подключение проверяется ДО записи в NVS. */
+bool wifi_manager_provision(const char *ssid, const char *pass,
+                            char *ip_out, size_t ip_sz, uint32_t timeout_ms)
+{
+    if (ssid == NULL || ssid[0] == '\0') return false;
+    if (ip_out != NULL && ip_sz > 0) ip_out[0] = '\0';
+    return wifi_manager_provision_try(ssid, pass, ip_out, ip_sz, timeout_ms);
+}
+
+static bool wifi_manager_provision_try(const char *ssid, const char *pass,
+                                       char *ip_out, size_t ip_sz,
+                                       uint32_t timeout_ms)
+{
+    wifi_config_t sta = {0};
+    strncpy((char *)sta.sta.ssid, ssid, sizeof(sta.sta.ssid) - 1);
+    if (pass != NULL) {
+        strncpy((char *)sta.sta.password, pass, sizeof(sta.sta.password) - 1);
+    }
+    esp_wifi_disconnect();   /* прежнее соединение мешало бы новому конфигу */
+    if (esp_wifi_set_config(WIFI_IF_STA, &sta) != ESP_OK) return false;
+    if (esp_wifi_connect() != ESP_OK) return false;
+    ESP_LOGI(TAG, "Improv: пробую сеть «%s»", ssid);
+    return wifi_provision_commit(ssid, pass, ip_out, ip_sz, timeout_ms);
 }
 
 net_run_mode_t wifi_manager_mode(void)

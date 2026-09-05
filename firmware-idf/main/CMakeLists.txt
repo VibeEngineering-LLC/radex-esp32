@@ -14,6 +14,7 @@ idf_component_register(
         "poll_cycle.c"
         "log_ring.c"
         "wifi_manager.c"
+        "improv_serial.c"
         "net_time.c"
         "http_io_gate.c"
     INCLUDE_DIRS "."

@@ -13,6 +13,7 @@
 #include "narodmon.h"
 #include "radon_stats.h"
 #include "net_time.h"    /* #RADEX-113: net_time_mark_sntp() */
+#include "improv_serial.h"   /* #RADEX-186 шаг Б: настройка Wi-Fi по проводу */
 #include "poll_cycle.h"
 #include "http_io_gate.h"   /* #RADEX-171 */
 
@@ -228,6 +229,11 @@ void app_main(void)
     poll_cycle_init();
     wifi_provision_if_empty();
     wifi_manager_init();
+    /* #RADEX-186 шаг Б: Improv Serial поднимается ПОСЛЕ менеджера сети — ему
+       нужен готовый STA-интерфейс, — и работает в любом режиме: в портале он и
+       нужен больше всего, а на настроенной плате позволяет сменить сеть по
+       проводу, не пересаживаясь на её AP. */
+    improv_serial_start();
     init_sntp();
 
     // В режиме первичной настройки порт 80 уже занят captive-порталом самого

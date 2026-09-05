@@ -246,6 +246,9 @@ static bool radon_stats_start_test_locked(void);
 static bool radon_stats_reset_locked(void);
 static time_t radon_stats_test_start_locked(void);
 static time_t radon_stats_test_start_eff_locked(void);
+static time_t radon_stats_test_end_locked(void);          /* #RADEX-200 */
+static bool   radon_stats_finish_test_commit(time_t start, time_t end);
+static bool   radon_stats_finish_test_locked(void);       /* #RADEX-200 */
 static int radon_stats_tests_list_json_locked(char *buf, size_t len);
 static int radon_stats_test_points_json_locked(time_t start, char *buf, size_t len);
 static float radon_stats_last_radon_locked(void);
@@ -349,7 +352,10 @@ static void radon_stats_add_locked(time_t ts, float radon, float radon_avg, floa
        НЕзависимого источника (например повторный вызов после сбоя) - пишем
        в файл замера только реальные метки, иначе имя файла (по tstart) и
        содержимое разъедутся по эпохам. */
-    time_t ts_active = radon_stats_test_start();
+    /* #RADEX-200: в ЗАВЕРШЁННЫЙ тест дозаписи нет — иначе его файл продолжал бы
+       расти после завершения, и результат, объявленный окончательным, менялся
+       бы сам. Общая история копится как прежде. */
+    time_t ts_active = radon_stats_test_end_locked() > 0 ? 0 : radon_stats_test_start();
     if (ts_active > 0 && ts >= ts_active) {
         char tf[48];
         radon_stats_test_file(ts_active, tf, sizeof(tf));
@@ -483,7 +489,11 @@ static bool radon_stats_period_locked(uint32_t seconds_back, radon_period_t *out
 
 /* Прежний интерфейс сохранён: границей служит отметка старта замера. */
 void radon_stats_assess(float c_rl, float u_d, bool restricted, radon_assess_t *out) {
-    radon_stats_assess_range(radon_stats_test_start(), 0, c_rl, u_d, restricted, out);
+    /* #RADEX-200: у завершённого теста правая граница окна — отметка конца, а
+       не «сейчас». Иначе заключение по закрытому тесту продолжало бы
+       пересчитываться по показаниям, снятым уже ПОСЛЕ него. */
+    radon_stats_assess_range(radon_stats_test_start(), radon_stats_test_end(),
+                             c_rl, u_d, restricted, out);
 }
 
 // Поиск ближайшего меньшего узла в таблице
@@ -785,6 +795,10 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
        бы утверждением, которого никто не делал (#AH-1). */
     time_t tstart = radon_stats_test_start_eff();
     bool   texplicit = radon_stats_test_start() > 0;
+    /* #RADEX-200: без отметки конца страница не отличит идущий тест от
+       завершённого и не сможет ни назвать состояние, ни распорядиться
+       кнопками (начать новый разрешено только по завершённому). */
+    time_t tend = radon_stats_test_end();
 
     // Формируем JSON
     return snprintf(buf, len,
@@ -801,7 +815,7 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
            молчит (см. methodTick()). */
         "\"crit1\":%.1f,\"crit2\":%.1f,\"days\":%u,\"c_rl\":%.1f,\"u_d\":%.2f,\"u_d_eff\":%.2f,\"restricted\":%s},"
         "\"storage\":{\"ok\":true,\"bytes\":%d,\"points\":%u},"
-        "\"test\":{\"start\":%lld,\"started\":%s,\"explicit\":%s}}",
+        "\"test\":{\"start\":%lld,\"started\":%s,\"explicit\":%s,\"end\":%lld,\"finished\":%s}}",
         p1.mean, (unsigned)p1.points, p1.coverage, (unsigned)p1.span_sec, p1.valid ? "true" : "false",
         p7.mean, (unsigned)p7.points, p7.coverage, (unsigned)p7.span_sec, p7.valid ? "true" : "false",
         p30.mean, (unsigned)p30.points, p30.coverage, (unsigned)p30.span_sec, p30.valid ? "true" : "false",
@@ -816,7 +830,9 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
         assess.restricted ? "true" : "false", (int)bytes, (unsigned)points,
         (long long) tstart,
         tstart != 0 ? "true" : "false",
-        texplicit ? "true" : "false");
+        texplicit ? "true" : "false",
+        (long long) tend,
+        tend != 0 ? "true" : "false");
 }
 
 // Путь к файлу истории — нужен веб-серверу, чтобы отдать его на скачивание
@@ -840,6 +856,17 @@ static bool radon_stats_start_test_locked(void) {
     err = nvs_set_i64(handle, "tstart", now);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to save test start time to NVS");
+        nvs_close(handle);
+        return false;
+    }
+
+    /* #RADEX-200: новый тест начинается НЕзавершённым. Отметку конца прошлого
+       снимаем здесь же, одной транзакцией с началом: останься она в NVS, новый
+       тест сразу выглядел бы завершённым, а окно заключения [tstart, tend]
+       оказалось бы вывернутым (конец раньше начала). */
+    err = nvs_erase_key(handle, "tend");
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "не снята отметка конца прошлого теста: %s", esp_err_to_name(err));
         nvs_close(handle);
         return false;
     }
@@ -921,6 +948,15 @@ static bool radon_stats_reset_locked(void) {
         return false;
     }
 
+    /* #RADEX-200: замера больше нет — значит нет и его завершения. Оставленная
+       отметка конца пережила бы сброс и досталась бы следующему замеру. */
+    err = nvs_erase_key(handle, "tend");
+    if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "не снята отметка конца теста при сбросе: %s", esp_err_to_name(err));
+        nvs_close(handle);
+        return false;
+    }
+
     err = nvs_commit(handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit test reset in NVS");
@@ -962,6 +998,91 @@ static time_t radon_stats_test_start_locked(void) {
     }
 
     return (time_t)start_time;
+}
+
+/* #RADEX-200: отметка КОНЦА теста. Читается тем же способом, что и начало, и
+   так же молчит на чистой плате (раздела "radon" ещё нет — это «тест не
+   завершён», а не сбой). 0 означает «идёт», поэтому невалидную по времени
+   метку тоже отдаём нулём: тест, завершённый до синхронизации часов, лучше
+   показать идущим, чем закрыть окном на 1970 год. */
+static time_t radon_stats_test_end_locked(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("radon", NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        if (err != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "не удалось открыть NVS для чтения конца замера: %s",
+                     esp_err_to_name(err));
+        }
+        return 0;
+    }
+    int64_t end_time;
+    err = nvs_get_i64(handle, "tend", &end_time);
+    nvs_close(handle);
+
+    if (err != ESP_OK) return 0;
+    if (!is_valid_time((time_t)end_time)) return 0;
+    return (time_t)end_time;
+}
+
+/* #RADEX-200: фиксация в NVS. Начало пишется ТОЖЕ — у замера по умолчанию его
+   в NVS нет, а окно завершённого теста обязано быть неподвижным: без записи
+   tstart левая граница поехала бы вместе с первой записью истории, когда та
+   попадёт под прореживание. */
+static bool radon_stats_finish_test_commit(time_t start, time_t end)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("radon", NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "нет доступа к NVS для завершения теста: %s", esp_err_to_name(err));
+        return false;
+    }
+    bool ok = nvs_set_i64(handle, "tstart", start) == ESP_OK &&
+              nvs_set_i64(handle, "tend", end) == ESP_OK &&
+              nvs_commit(handle) == ESP_OK;
+    nvs_close(handle);
+    if (!ok) {
+        ESP_LOGE(TAG, "отметка завершения теста не сохранена");
+        return false;
+    }
+    radon_stats_bump_generation();
+    ESP_LOGI(TAG, "тест завершён: %lld…%lld", (long long)start, (long long)end);
+    return true;
+}
+
+/* #RADEX-200: завершение теста. Данные НЕ трогаются вовсе — ни общая история,
+   ни файл замера: единственное действие над флешем здесь это снимок, и тот
+   лишь досоздаёт файл замеру, шедшему по умолчанию. */
+static bool radon_stats_finish_test_locked(void)
+{
+    if (!mounted) {
+        ESP_LOGE(TAG, "нельзя завершить тест: хранилище не смонтировано");
+        return false;
+    }
+    time_t now = time(NULL);
+    if (!is_valid_time(now)) {
+        ESP_LOGE(TAG, "нельзя завершить тест: часы платы не синхронизированы");
+        return false;
+    }
+    if (radon_stats_test_end_locked() > 0) {
+        ESP_LOGW(TAG, "тест уже завершён");
+        return false;
+    }
+    time_t start = radon_stats_test_start_eff_locked();
+    if (start <= 0) {
+        ESP_LOGW(TAG, "нечего завершать: измерений ещё нет");
+        return false;
+    }
+
+    /* #RADEX-228 переиспользуется целиком: у замера, шедшего по умолчанию,
+       файла нет, и без снимка завершённый тест остался бы состоянием без
+       результата. Своего второго механизма записи не заводим. Мьютекс модуля
+       рекурсивный — повторный захват из этой же задачи допустим. */
+    uint32_t snap_points = 0;
+    if (radon_stats_test_snapshot(&snap_points) <= 0) {
+        ESP_LOGW(TAG, "снимок замера не сделан — завершаем по имеющемуся файлу");
+    }
+    return radon_stats_finish_test_commit(start, now);
 }
 
 /* #RADEX-150: обоснование — в radon_stats.h. Механика: явная отметка сильнее,
@@ -1018,7 +1139,11 @@ static int radon_stats_tests_list_json_locked(char *buf, size_t len) {
        «Сохранить замер» создаёт файл для замера, идущего по умолчанию (отметки
        у него нет), и с прежним сравнением такой файл помечался «не активен» —
        идущий замер выглядел в списке архивным. */
-    time_t active = radon_stats_test_start_eff_locked();
+    /* #RADEX-200: у завершённого теста активного замера нет ни одного — иначе
+       закрытый тест оставался бы в перечне «идущим» и его нельзя было бы
+       удалить (удаление активного запрещено, web_server.c). */
+    time_t active = radon_stats_test_end_locked() > 0
+                        ? 0 : radon_stats_test_start_eff_locked();
     int written = snprintf(buf, len, "[");
     if (written < 0 || (size_t)written >= len) { closedir(d); return -1; }
     size_t pos = (size_t)written;
@@ -1574,6 +1699,26 @@ time_t radon_stats_test_start_eff(void)
     return result;
 }
 
+time_t radon_stats_test_end(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) {
+        return 0;
+    }
+    time_t result = radon_stats_test_end_locked();
+    radon_stats_unlock();
+    return result;
+}
+
+bool radon_stats_finish_test(void)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_WRITE)) {
+        return false;
+    }
+    bool result = radon_stats_finish_test_locked();
+    radon_stats_unlock();
+    return result;
+}
+
 int radon_stats_tests_list_json(char *buf, size_t len)
 {
     if (!radon_stats_lock(RS_LOCK_MS_READ)) {
@@ -2121,7 +2266,9 @@ bool radon_stats_test_delete(time_t start)
        Критерий обязан совпадать с тем, по которому список рисует «идёт сейчас»
        (radon_stats_tests_list_json_locked), иначе интерфейс говорит одно, а
        плата делает другое. */
-    time_t active = radon_stats_test_start_eff();
+    /* #RADEX-200: тот же критерий, что и в списке — завершённый тест идущим не
+       считается и удаляется как любой архивный. */
+    time_t active = radon_stats_test_end() > 0 ? 0 : radon_stats_test_start_eff();
     if (active > 0 && active == start) {
         ESP_LOGW(TAG, "попытка удалить идущий замер отклонена");
         return false;

@@ -38,27 +38,21 @@
                убран целиком, а не спрятан стилем: paintByNorm() теперь работает и
                без него (красит число, доли не пишет). Долю от норматива по-прежнему
                показывает цветная шкала справа от графика. -->
+          <!-- #RADEX-245, оператор 05.09: «текущее и среднее сделай в одном блоке
+               в две строки». Обе величины — про одно и то же измерение, и стояли
+               двумя карточками рядом; теперь один блок, вторая строка под первой. -->
           <div class="card-title">Текущая ОА радона</div>
           <div class="card-value large" id="radon-last">—</div><span class="sub" id="radon-last-unit" style="font-size:var(--fs-xs)"> Бк/м³</span>
-        </div>
-        <!-- То же среднее с суммарной погрешностью, что подписано на графике:
-             на телефоне подпись внутри холста мелкая, а число нужно чаще всего. -->
-        <!-- #RADEX-131, оператор: «сделай шрифт одного размера» — было
-             .card-value (fs-xl) + fs-md (± …) + fs-xs (единица), «126»
-             заметно крупнее остального. Все три куска — fs-xl; жирность
-             .card-value НЕ трогаем (осталась отличать число от текста
-             погрешности типографски, без разницы в размере). Только эта
-             карточка — «ОА текущая»/температура/влажность не просили. -->
-        <div class="card">
-          <!-- #RADEX-193, Цапалов (2): «Среднее расчётное ОА» → «Средняя ОА радона»,
-               значение без «± N». Он же спросил, как эта погрешность считается: у нас
-               это mean·√(u_stat² + u_inst²), где u_stat — стандартная ошибка среднего
-               (k=1), а u_inst — паспортные 20 % с неоговорённым k. Складывать величины
-               с разными k нельзя, и на сотнях точек ±N сводилось к паспорту прибора —
-               то есть показывало не то, чем выглядело. Убрано. -->
-          <div class="card-title">Средняя ОА радона</div>
+          <div class="card-title" style="margin-top:var(--sp-3)">Средняя ОА радона</div>
           <div class="card-value" id="radon-mean">—</div><span class="sub" id="radon-mean-unit" style="font-size:var(--fs-xl)"> Бк/м³</span>
         </div>
+        <!-- #RADEX-245: карточка «Средняя ОА радона» слита с «Текущей» выше —
+             вторая строка того же блока. Прежние решения по ней в силе:
+             #RADEX-131 (единый размер шрифта) и #RADEX-193, Цапалов (2):
+             «Среднее расчётное ОА» → «Средняя ОА радона», значение без «± N»
+             (та погрешность складывала стандартную ошибку среднего с k=1 и
+             паспортные 20 % с неоговорённым k — величины с разными k складывать
+             нельзя, и на сотнях точек ±N сводилось к паспорту прибора). -->
         <!-- #RADEX-226, Цапалов 04.09: «важно различать Среднюю ОА радона и
              Расчетную среднегодовую ОА радона, у которых будет одинаковое
              центральное значение, но разные погрешности». Центр тот же, что у
@@ -848,10 +842,10 @@
           <label for="import-file">Загрузить выгрузку прибора (CSV) как отдельный замер</label>
           <!-- #RADEX-236, оператор: «в одну линию». Выбор файла, имя и кнопка —
                один шаг, а стояли двумя ярусами. -->
+          <!-- #RADEX-244, оператор 05.09: «поле ввода имени тут не нужно» —
+               имя замера берётся из имени файла, спрашивать его вторично незачем. -->
           <div class="test-controls">
             <input type="file" id="import-file" accept=".csv,text/csv">
-            <input type="text" id="import-label" maxlength="24" placeholder="имя замера, например kvartira-2"
-                   aria-label="имя импортируемого замера">
             <button type="button" id="btn-import-test">Импортировать</button>
           </div>
           <div class="sub" id="import-note" style="font-size:var(--fs-xs);margin-top:6px">
@@ -2148,6 +2142,13 @@ function multiAddSeries(name, csvText) {
 let multiPresetsBound = false;
 
 function multiRedraw() {
+  /* #RADEX-242: пересчёт заключения ставится в очередь ПЕРВОЙ строкой, до всех
+     ранних выходов. Стоял в конце — и когда галочки снимали, функция выходила
+     на «видимых рядов нет» раньше него: график становился пустым, а заключение
+     оставалось от прошлого файла (оператор: «ничего не выбрано, а оценка что-то
+     считает»). Сам вызов отложен на 400 мс и разбирается, что показывать. */
+  if (typeof assessFromViewSoon === 'function') assessFromViewSoon();
+
   /* #RADEX-123: геометрия вот-вот изменится (зум/пан/смена вкладки/данных) —
      старый снимок для tooltip больше не годится. Подсказка появится заново
      на следующем mousemove, если курсор всё ещё над полем графика. */
@@ -2545,12 +2546,6 @@ function multiRedraw() {
     multiChartSnapshot = null;
   }
 
-  /* #RADEX-242: окно графика изменилось — заключение обязано догнать его.
-     Отложенно (400 мс после остановки): multiRedraw() зовётся на каждое
-     событие колеса и на каждый пиксель перетаскивания, и запрос на каждое из
-     них завалил бы плату. Ключ запроса внутри отсекает повтор с теми же
-     границами — перерисовка без смены окна плату не трогает вовсе. */
-  if (typeof assessFromViewSoon === 'function') assessFromViewSoon();
 }
 
 function multiUpdateLegend() {
@@ -4119,11 +4114,10 @@ function bindTestLabel() {
    графики». Тело запроса — сам CSV, имя замера уходит параметром label. */
 function bindTestImport() {
   const input = document.getElementById('import-file');
-  const label = document.getElementById('import-label');
   const button = document.getElementById('btn-import-test');
   const note = document.getElementById('import-note');
 
-  if (!input || !label || !button || !note) return;
+  if (!input || !button || !note) return;
 
   button.addEventListener('click', async () => {
     button.disabled = true;
@@ -4134,9 +4128,14 @@ function bindTestImport() {
       }
 
       const file = input.files[0];
-      if (file.size > 256 * 1024) {   /* плата: RADON_IMPORT_MAX_BYTES = 262144 (web_server.c:1152) */
+      /* #RADEX-243: предел платы подняли до 1 МБ ещё в #RADEX-236 (web_server.c,
+         RADON_IMPORT_MAX_BYTES), а эта проверка осталась на 256 КБ — страница
+         отвергала годную годовую выгрузку (288 КБ), не доходя до платы. Две
+         константы в разных файлах, связанные только комментарием: тот же класс,
+         что P-033 и P-035. */
+      if (file.size > 1024 * 1024) {
         const kb = Math.floor(file.size / 1024);
-        note.textContent = `файл слишком большой: ${kb} КБ, плата принимает до 256 КБ`;
+        note.textContent = `файл слишком большой: ${kb} КБ, плата принимает до 1024 КБ`;
         return;
       }
 
@@ -4146,9 +4145,14 @@ function bindTestImport() {
         return;
       }
 
+      /* #RADEX-244: имя замера — из имени файла, без расширения и не длиннее
+         RADON_LABEL_MAX (24). Плата всё равно отфильтрует его по белому списку
+         A-Za-z0-9-_ (radon_label_sanitize), поэтому кириллицу и пробелы здесь
+         не транслитерируем: одно правило фильтрации, и оно на плате. */
+      const named = file.name.replace(/\.[^.]*$/, '').slice(0, 24).trim();
       let url = '/api/tests/import';
-      if (label.value.trim()) {
-        url += '?label=' + encodeURIComponent(label.value.trim());
+      if (named) {
+        url += '?label=' + encodeURIComponent(named);
       }
 
       const response = await fetch(url, {

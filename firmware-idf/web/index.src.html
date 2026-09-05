@@ -720,13 +720,13 @@
           <button type="button" data-span="15552000">6 мес</button>
           <button type="button" data-span="31536000">12 мес</button>
           <button type="button" data-span="all" aria-pressed="true">Всё время</button>
-          <!-- #RADEX-147, оператор: перенести «Вся история платы» в верхний ряд
-               пресетов периода, сразу правее «Всё время» — раньше стояла отдельной
-               строкой ниже слева от «интервал: с/по». Это не пресет вида (не имеет
-               data-span, не участвует в toggle aria-pressed), а отдельное действие
-               (добавляет ряд из архива платы), потому без aria-pressed остаётся. -->
-          <button id="multi-add-board" type="button">Вся история платы</button>
         </div>
+        <!-- #RADEX-237, оператор: «кнопки расположены хаотично». Редкие
+             действия — интервал общей истории, склейка рядов, сглаживание —
+             свёрнуты: над графиком остаются две строки (величины и период),
+             а не четыре. -->
+        <details class="multi-more">
+          <summary>ещё: интервал истории, склейка рядов, сглаживание</summary>
         <div class="chart-controls">
           <span class="sub" style="align-self:center">интервал:</span>
           <!-- #RADEX-134, оператор: пустой type="date" на iOS Safari рисуется
@@ -764,7 +764,7 @@
             <input type="number" id="multi-sma" value="1" min="1" max="50" step="1"
                    class="range-date" style="width:64px" aria-label="окно скользящего среднего в точках (SMA)">
           </label>
-          <!-- #RADEX-119, оператор: «убери погрешность с Графиков, она в
+        <!-- #RADEX-119, оператор: «убери погрешность с Графиков, она в
                методе задаётся». ПРОВЕРКА ПЕРЕД ПРАВКОЙ (#DBG-1) показала, что
                предпосылка оператора не совпадает с кодом: #device-uncertainty
                («паспортная погрешность прибора», используется в drawMeanLine
@@ -787,6 +787,7 @@
                задача бэкенда. -->
           <input type="hidden" id="device-uncertainty" value="20">
         </div>
+        </details>
         <!-- #RADEX-137, оператор: «график должен разворачиваться в полноэкранный
              режим по тапу/кнопке». CSS-оверлей на весь viewport, а не Fullscreen
              API (`element.requestFullscreen()`) — тот на iOS Safari исторически
@@ -801,7 +802,7 @@
                   aria-label="Развернуть график на весь экран" title="Развернуть на весь экран">⛶</button>
           <canvas id="multi-chart"></canvas>
         </div>
-        <div id="multi-legend" class="sub" style="margin-top:8px"></div>
+        <div id="multi-legend" class="sub" hidden></div>
         <!-- #RADEX-110: при нескольких одновременно включённых величинах цвет
            уже занят рядом (сериями) — начертание линии подсказывает величину.
            Пусто, пока включена только одна (обычное состояние, ничего
@@ -833,21 +834,18 @@
         </div>
         <div id="assess-arch-out" class="assess-arch-out sub">интервал или замер не выбран</div>
       </div>
-      <!-- #RADEX-233, оператор: «вообще пересмотри вкладку. тут бардак».
-           Таблица рядов стояла ГОЛОЙ между карточками — единственный блок
-           вкладки без заголовка и без карточки, да ещё и оторванный от графика,
-           который описывает. Теперь она сразу под графиком и подписана: это его
-           легенда в числах, а не отдельная сущность. -->
-      <div class="card" id="multi-stats-card">
-        <div class="card-title">Ряды на графике</div>
-        <table id="multi-stats"></table>
-      </div>
+      <table id="multi-stats" hidden></table>
       <!-- #RADEX-102: список замеров с флеш — каждый читается через свой файл
            (/api/tests, /api/tests/points?start=), клик добавляет его рядом
            тем же путём, что «Вся история платы» (multiPutSeries). -->
+      <!-- #RADEX-237: ОДНА панель вместо трёх списков (легенда-чекбоксы,
+           таблица рядов, список замеров). Строка = галочка «на графике» + цвет
+           ряда + имя + период + статистика + кнопки. Общая история платы — такая
+           же строка, а не кнопка среди пресетов периода. -->
       <div class="card" id="tests-list-card">
-        <div class="card-title">Сохранённые замеры</div>
-        <div id="tests-list" class="sub">загрузка…</div>
+        <div class="card-title">Замеры <span class="sub" style="font-weight:400">— галочка показывает ряд на графике</span></div>
+        <div id="tests-panel" class="tp">загрузка…</div>
+        <div id="tests-list" hidden></div>
         <!-- #RADEX-224, оператор: «делам. анализируем ТОЛЬКО на вкладке графики».
              Выгрузка прибора приходит СЮДА и становится ещё одним сохранённым
              замером — общая история платы и идущий замер не меняются вовсе
@@ -2595,46 +2593,11 @@ function multiRedraw() {
 }
 
 function multiUpdateLegend() {
+  /* #RADEX-237: легенда-чекбоксы упразднена, её роль у панели «Замеры». Класс
+     is-empty остаётся — на него завязаны подсказки в пустом состоянии. */
   const box = document.getElementById('multi-content');
   if (box) box.classList.toggle('is-empty', series.length === 0);
-  const legendEmpty = document.getElementById('multi-legend');
-  if (legendEmpty && series.length === 0) {
-    legendEmpty.textContent = 'файлы не выбраны';
-  }
-  const legend = document.getElementById('multi-legend');
-  if (series.length === 0) {
-    legend.innerHTML = '<p>файлы не выбраны</p>';
-    return;
-  }
-
-  let html = '';
-  series.forEach((s, index) => {
-    if (s.error) {
-      html += `<div><span style="color: var(--err);">${s.name}: ${s.error}</span></div>`;
-    } else {
-      html += `
-        <div>
-          <input type="checkbox" id="series-${index}" ${s.visible ? 'checked' : ''}>
-          <label for="series-${index}">
-            <span style="display: inline-block; width: 10px; height: 10px; background-color: ${COLORS[index % COLORS.length]};"></span>
-            ${s.name}
-          </label>
-        </div>`;
-    }
-  });
-
-  legend.innerHTML = html;
-
-  series.forEach((s, index) => {
-    const checkbox = document.getElementById(`series-${index}`);
-    if (checkbox) {
-      checkbox.addEventListener('change', () => {
-        s.visible = checkbox.checked;
-        multiRedraw();
-        multiUpdateStats();
-      });
-    }
-  });
+  if (typeof renderTestsPanel === 'function') renderTestsPanel();
 }
 
 /* #RADEX-97: пресет задаёт ОКНО от правого края данных, а не абсолютные даты —
@@ -2678,182 +2641,9 @@ function multiPointsInView(points) {
 }
 
 function multiUpdateStats() {
-  const statsEmpty = document.getElementById('multi-stats');
-  if (statsEmpty && series.length === 0) {
-    statsEmpty.textContent = 'Возьмите историю с флеш платы целиком или интервалом — интервалы можно сравнить между собой и склеить в один ряд. ';
-    return;
-  }
-  const statsTable = document.getElementById('multi-stats');
-  if (series.length === 0) {
-    statsTable.innerHTML = '';
-    return;
-  }
-
-  const mergeChecked = document.getElementById('multi-merge').checked;
-
-  if (mergeChecked) {
-    const visibleSeries = series.filter(s => s.visible);
-    let allPoints = [];
-    visibleSeries.forEach(s => {
-      allPoints = allPoints.concat(s.points);
-    });
-    allPoints.sort((a, b) => a.t - b.t);
-
-    // Удаляем точки с совпадающими метками времени
-    const uniquePoints = [];
-    let prevTime = null;
-    for (const p of allPoints) {
-      if (p.t !== prevTime) {
-        uniquePoints.push(p);
-        prevTime = p.t;
-      }
-    }
-
-    allPoints = multiPointsInView(uniquePoints);   /* #RADEX-98: только видимое окно */
-
-    if (allPoints.length === 0) {
-      statsTable.innerHTML = '';
-      return;
-    }
-
-    const mean = allPoints.reduce((sum, p) => sum + p.r, 0) / allPoints.length;
-    /* Обе составляющие приводим к ОТНОСИТЕЛЬНЫМ величинам: складывать разброс
-       измерений в Бк/м³ с паспортной долей прибора нельзя, это разные
-       размерности. Поле неопределённости хранит проценты — делим на сто
-       (раньше бралось «30» как доля, и погрешность выходила в тридцать раз
-       больше среднего). Дисперсия по (n-1) — несмещённая оценка. */
-    const nPts = allPoints.length;
-    const variance = nPts > 1
-      ? allPoints.reduce((sum, p) => sum + Math.pow(p.r - mean, 2), 0) / (nPts - 1)
-      : 0;
-    const stdDev = Math.sqrt(variance);
-    const uStatRel = (nPts > 1 && mean > 0) ? (stdDev / Math.sqrt(nPts)) / mean : 0;
-    const uInstRel = (parseFloat((document.getElementById('device-uncertainty') || {}).value) || 20) / 100;
-    const totalRel = Math.sqrt(uStatRel * uStatRel + uInstRel * uInstRel);
-    const totalError = mean * totalRel;
-
-    const firstTime = allPoints[0].t;
-    const lastTime = allPoints[allPoints.length - 1].t;
-    const duration = lastTime - firstTime;
-
-    let durationStr = '';
-    if (duration < 60) {
-      durationStr = `${Math.round(duration)} сек`;
-    } else if (duration < 3600) {
-      durationStr = `${Math.round(duration / 60)} мин`;
-    } else if (duration < 86400) {
-      durationStr = `${Math.round(duration / 3600)} ч`;
-    } else {
-      durationStr = `${Math.round(duration / 86400)} сут`;
-    }
-
-    statsTable.innerHTML = `
-      <tr>
-        <th>Ряд</th>
-        <th>Измерений</th>
-        <th>Охват</th>
-        <th>Среднее ± погрешность</th>
-      </tr>
-      <tr>
-        <td>Объединённый ряд</td>
-        <td>${allPoints.length}</td>
-        <td>${durationStr}</td>
-        <td>${Math.round(mean)} ± ${Math.round(totalError)} Бк/м³</td>
-      </tr>`;
-  } else {
-    let html = `
-      <tr>
-        <th style="width:34px"></th>
-        <th>Ряд</th>
-        <th>Измерений</th>
-        <th>Охват</th>
-        <th>Среднее ± погрешность</th>
-      </tr>`;
-
-    series.forEach((s, idx) => {
-      if (s.points.length === 0) {
-        html += `
-          <tr>
-            <td><input type="checkbox" class="multi-row-toggle" data-idx="${idx}" ${s.visible ? 'checked' : ''}
-                       aria-label="показывать ряд ${s.name} на графике"></td>
-            <td>${s.name}${s.error ? ' — ' + s.error : ''}</td>
-            <td>0</td>
-            <td>—</td>
-            <td>—</td>
-          </tr>`;
-        return;
-      }
-
-      /* #RADEX-98: считаем по точкам видимого окна, а не по всему ряду —
-         иначе таблица не меняется ни от пресета, ни от зума. */
-      const viewPts = multiPointsInView(s.points);
-      if (viewPts.length === 0) {
-        html += `
-          <tr>
-            <td><input type="checkbox" class="multi-row-toggle" data-idx="${idx}" ${s.visible ? 'checked' : ''}
-                       aria-label="показывать ряд ${s.name} на графике"></td>
-            <td>${s.name}</td>
-            <td>0</td>
-            <td>вне выбранного периода</td>
-            <td>—</td>
-          </tr>`;
-        return;
-      }
-      const mean = viewPts.reduce((sum, p) => sum + p.r, 0) / viewPts.length;
-      /* Обе составляющие приводим к ОТНОСИТЕЛЬНЫМ величинам: складывать разброс
-         измерений в Бк/м³ с паспортной долей прибора нельзя, это разные
-         размерности. Поле неопределённости хранит проценты — делим на сто
-         (раньше бралось «30» как доля, и погрешность выходила в тридцать раз
-         больше среднего). Дисперсия по (n-1) — несмещённая оценка. */
-      const nPts = viewPts.length;
-      const variance = nPts > 1
-        ? viewPts.reduce((sum, p) => sum + Math.pow(p.r - mean, 2), 0) / (nPts - 1)
-        : 0;
-      const stdDev = Math.sqrt(variance);
-      const uStatRel = (nPts > 1 && mean > 0) ? (stdDev / Math.sqrt(nPts)) / mean : 0;
-      const uInstRel = (parseFloat((document.getElementById('device-uncertainty') || {}).value) || 20) / 100;
-      const totalRel = Math.sqrt(uStatRel * uStatRel + uInstRel * uInstRel);
-      const totalError = mean * totalRel;
-
-      const firstTime = viewPts[0].t;
-      const lastTime = viewPts[viewPts.length - 1].t;
-      const duration = lastTime - firstTime;
-
-      let durationStr = '';
-      if (duration < 60) {
-        durationStr = `${Math.round(duration)} сек`;
-      } else if (duration < 3600) {
-        durationStr = `${Math.round(duration / 60)} мин`;
-      } else if (duration < 86400) {
-        durationStr = `${Math.round(duration / 3600)} ч`;
-      } else {
-        durationStr = `${Math.round(duration / 86400)} сут`;
-      }
-
-      html += `
-        <tr>
-          <td><input type="checkbox" class="multi-row-toggle" data-idx="${idx}" ${s.visible ? 'checked' : ''}
-                     aria-label="показывать ряд ${s.name} на графике"></td>
-          <td>${s.name}</td>
-          <td>${s.points.length}</td>
-          <td>${durationStr}</td>
-          <td>${Math.round(mean)} ± ${Math.round(totalError)} Бк/м³</td>
-        </tr>`;
-    });
-
-    statsTable.innerHTML = html;
-    /* Обработчики навешиваем после отрисовки: таблица пересобирается целиком,
-       и прежние элементы вместе со своими обработчиками исчезают. */
-    statsTable.querySelectorAll('.multi-row-toggle').forEach(function (cb) {
-      cb.addEventListener('change', function () {
-        const i = Number(cb.getAttribute('data-idx'));
-        if (series[i]) series[i].visible = cb.checked;
-        multiRedraw();
-        multiUpdateLegend();
-        multiUpdateStats();
-      });
-    });
-  }
+  /* #RADEX-237: таблица рядов упразднена — статистика теперь в строках панели
+     «Замеры» (seriesSummary). Считается по загруженным точкам ряда. */
+  if (typeof renderTestsPanel === 'function') renderTestsPanel();
 }
 
 /* #RADEX-102: точки одного замера — тот же JSON-контракт, что у истории
@@ -2886,98 +2676,23 @@ function testsFormatSpan(sec) {
    перечитывается при каждом заходе на вкладку «Графики» (switchTab) и после
    старта/сброса замера — состояние на плате могло измениться. */
 async function multiLoadTestsList() {
-  const box = document.getElementById('tests-list');
-  if (!box) return;
+  /* #RADEX-237: список замеров теперь кормит панель, а не строит свою разметку.
+     Имя ИДУЩЕГО замера по-прежнему подставляется в поле на «Заключении»
+     (#RADEX-228) — без этого «Сохранить» затирало бы имя пустой строкой. */
   try {
     const r = await fetch('/api/tests', {cache: 'no-store'});
     const list = await r.json();
-    if (!Array.isArray(list) || list.length === 0) {
-      box.textContent = 'сохранённых замеров пока нет — появятся после первого «Старт»';
-      return;
-    }
-    list.sort((a, b) => b.start - a.start);   /* новые замеры сверху */
-    box.innerHTML = '';
-    list.forEach(item => {
-      const row = document.createElement('div');
-      row.className = 'btn-row';
-      row.style.cssText = 'justify-content:space-between;align-items:center;padding:4px 0';
-      const when = new Date(item.start * 1000).toLocaleString('ru-RU');
-      /* #RADEX-228: имя замера впереди даты — по нему человек его и ищет.
-         Пустое имя (замеру имени не давали) строку не занимает. */
-      const name = item.label ? `«${item.label}» · ` : '';
-      /* #RADEX-228: имя ИДУЩЕГО замера подставляется в поле на «Соответствии» —
-         иначе человек не видит, какое имя уже стоит, и «Сохранить» затирает его
-         пустой строкой. Поле в фокусе не трогаем: он может печатать прямо сейчас. */
-      if (item.active) {
-        const lf = document.getElementById('test-label');
-        if (lf && document.activeElement !== lf) lf.value = item.label || '';
-      }
-      const label = document.createElement('span');
-      label.textContent = `${name}${when} · точек: ${item.points} · длительность: ${testsFormatSpan(item.span_sec)}`
-        + (item.active ? ' · идёт сейчас' : '');
-      /* #RADEX-227: заключение по ЭТОМУ файлу — оператор: «оценка будет
-         выводиться по выбранным файлам». Результат идёт в свой блок ниже и
-         карточку текущего замера не трогает. */
-      const assessBtn = document.createElement('button');
-      assessBtn.type = 'button';
-      assessBtn.textContent = 'Оценить';
-      assessBtn.addEventListener('click', () => archAssessTest(item.start, when, item.label || ''));
-      /* #RADEX-234, оператор: «и сохранённое нужно иметь возможность удалять».
-         У идущего замера кнопки нет вовсе — плата его всё равно не удалит, а
-         кнопка, которая заведомо ответит отказом, хуже её отсутствия. */
-      let delBtn = null;
-      if (!item.active) {
-        delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.className = 'btn-danger';
-        delBtn.textContent = 'Удалить';
-        delBtn.addEventListener('click', async () => {
-          const what = item.label ? `«${item.label}»` : `от ${when}`;
-          if (!confirm(`Удалить замер ${what}? Файл с ${item.points} измерениями будет стёрт с флеш-памяти платы безвозвратно.`)) return;
-          delBtn.disabled = true;
-          try {
-            const r = await fetch('/api/tests/delete', {method: 'POST', body: String(item.start)});
-            if (!r.ok) { alert('Плата не удалила замер (HTTP ' + r.status + ')'); return; }
-            await multiLoadTestsList();
-          } catch (e) {
-            alert('Не удалось удалить замер: ' + e.message);
-          } finally {
-            delBtn.disabled = false;
-          }
-        });
-      }
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.textContent = 'Добавить рядом';
-      btn.addEventListener('click', async () => {
-        btn.disabled = true;
-        try {
-          const pts = await multiFetchTestPoints(item.start);
-          multiPutSeries({name: 'замер ' + when, points: pts, visible: true,
-                           error: pts.length ? '' : 'за этот замер записей нет'});
-          multiUpdateLegend();
-          multiUpdateStats();
-          multiRedraw();
-        } catch (e) {
-          alert('не удалось получить замер: ' + e.message);
-        } finally {
-          btn.disabled = false;
-        }
-      });
-      row.appendChild(label);
-      /* Кнопки одной группой справа, иначе justify-content:space-between
-         разносит их по разным краям строки. */
-      const acts = document.createElement('span');
-      acts.className = 'btn-row';
-      acts.appendChild(assessBtn);
-      acts.appendChild(btn);
-      if (delBtn) acts.appendChild(delBtn);
-      row.appendChild(acts);
-      box.appendChild(row);
-    });
+    testsCache = Array.isArray(list) ? list : [];
+    const cur = testsCache.find(x => x && x.active);
+    const lf = document.getElementById('test-label');
+    if (cur && lf && document.activeElement !== lf) lf.value = cur.label || '';
   } catch (error) {
-    box.textContent = 'не удалось получить список: ' + error.message;
+    testsCache = [];
+    const panel = document.getElementById('tests-panel');
+    if (panel) panel.textContent = 'не удалось получить список замеров: ' + error.message;
+    return;
   }
+  renderTestsPanel();
 }
 
 function multiBind() {
@@ -3014,9 +2729,7 @@ function multiBind() {
     multiRedraw();
   }
 
-  document.getElementById('multi-add-board').addEventListener('click', function() {
-    multiAddFromBoard('вся история платы', 0, 0);
-  });
+  /* #RADEX-237: кнопка «Вся история платы» стала строкой панели «Замеры». */
 
   /* #RADEX-80: при открытии вкладки показываем текущую сессию сразу. Пустой холст
      с приглашением нажать кнопку — лишний шаг: история платы нужна почти всегда.
@@ -3031,6 +2744,10 @@ function multiBind() {
     if (cv) new ResizeObserver(function () { multiRedraw(); }).observe(cv);
   }
 
+  /* #RADEX-237: панель «Замеры» живёт вне этого замыкания, а ряд общей
+     истории строит multiAddFromBoard — отдаём ей ту же функцию под тем же
+     именем ряда, чтобы у истории не завелось двух рядов с разными именами. */
+  window.multiAddBoardHistory = function () { return multiAddFromBoard('текущая сессия', 0, 0); };
   window.multiEnsureSession = function () {
     if (series.length === 0) multiAddFromBoard('текущая сессия', 0, 0);
   };
@@ -3053,10 +2770,8 @@ function multiBind() {
   }
 
   document.getElementById('multi-clear').addEventListener('click', function() {
-    series = [];
-    multiUpdateLegend();
-    multiUpdateStats();
-    multiRedraw();
+    /* #RADEX-237: «Очистить» = снять галочки в панели, точки не выбрасывать. */
+    if (typeof testsPanelClear === 'function') testsPanelClear();
   });
 
   document.getElementById('multi-merge').addEventListener('change', function() {
@@ -4514,6 +4229,186 @@ function bindTestImport() {
       button.disabled = false;
     }
   });
+}
+
+/* #RADEX-237: панель «Замеры» — один список вместо трёх (легенда-чекбоксы,
+   таблица рядов, список файлов). Строка = галочка «на графике» + цвет ряда +
+   имя + период + статистика + кнопки. Имена рядов те же, что давала кнопка
+   «Добавить рядом» («замер <дата>») и общая история («текущая сессия»):
+   иначе у одного файла завелось бы два ряда. */
+let testsCache = [];
+
+function seriesSummary(points) {
+  if (!points || points.length === 0) return null;
+  const validPoints = points.filter(p => typeof p.r === 'number' && !isNaN(p.r));
+  if (validPoints.length === 0) return null;
+
+  const rValues = validPoints.map(p => p.r);
+  const n = rValues.length;
+  const mean = rValues.reduce((a, b) => a + b, 0) / n;
+  const uInst = parseFloat(document.getElementById('device-uncertainty')?.value || '20') / 100;
+  let uStat = 0;
+  if (n > 1 && mean > 0) {
+    const variance = rValues.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / (n - 1);
+    const stdDev = Math.sqrt(variance);
+    uStat = (stdDev / Math.sqrt(n)) / mean;
+  }
+  const err = mean * Math.sqrt(uStat * uStat + uInst * uInst);
+
+  const first = Math.min(...points.map(p => p.t));
+  const last = Math.max(...points.map(p => p.t));
+
+  return { n, mean, err, first, last };
+}
+
+function testsPanelRows() {
+  const rows = [];
+  rows.push({
+    key: 'board',
+    seriesName: 'текущая сессия',
+    title: 'история платы',
+    when: 'все записи флеш',
+    meta: '',
+    start: 0,
+    active: false,
+    deletable: false
+  });
+
+  const sortedTests = [...testsCache].sort((a, b) => b.start - a.start);
+  for (const test of sortedTests) {
+    const dateStr = new Date(test.start * 1000).toLocaleString('ru-RU');
+    const seriesName = 'замер ' + dateStr;
+    rows.push({
+      key: String(test.start),
+      seriesName,
+      title: test.label || 'замер',
+      when: dateStr,
+      meta: `${test.points} изм · ${testsFormatSpan(test.span_sec)}${test.active ? ' · идёт сейчас' : ''}`,
+      start: test.start,
+      active: test.active,
+      deletable: !test.active
+    });
+  }
+
+  return rows;
+}
+
+function renderTestsPanel() {
+  const panel = document.getElementById('tests-panel');
+  if (!panel) return;
+
+  const rows = testsPanelRows();
+  let html = '';
+  for (const row of rows) {
+    const idx = series.findIndex(s => s.name === row.seriesName);
+    const s = idx >= 0 ? series[idx] : null;
+    const color = s ? COLORS[idx % COLORS.length] : 'var(--line)';
+    const checked = s && s.visible ? 'checked' : '';
+    let statHtml = '';
+    if (s) {
+      if (s.error) {
+        statHtml = `<div class="tp-stat" style="color:var(--err)">${s.error}</div>`;
+      } else if (s.visible && s.points.length) {
+        const summary = seriesSummary(s.points);
+        if (summary) {
+          statHtml = `<div class="tp-stat">${Math.round(summary.mean)} ± ${Math.round(summary.err)} Бк/м³<br>${summary.n} точек на графике</div>`;
+        } else {
+          statHtml = `<div class="tp-stat">скрыт</div>`;
+        }
+      } else if (s.visible) {
+        statHtml = `<div class="tp-stat">не загружен</div>`;
+      } else {
+        statHtml = `<div class="tp-stat">скрыт</div>`;
+      }
+    } else {
+      statHtml = `<div class="tp-stat">не загружен</div>`;
+    }
+
+    let actionsHtml = '';
+    if (row.key !== 'board') {
+      actionsHtml += '<button class="btn" onclick="archAssessTest(' + row.start + ', \'' + row.when + '\', \'' + (row.title === 'замер' ? '' : row.title) + '\')">Оценить</button>';
+    }
+    if (row.deletable) {
+      actionsHtml += '<button class="btn btn-danger" onclick="testsPanelDelete(' + row.start + ', \'' + row.seriesName + '\')">Удалить</button>';
+    }
+
+    html += `
+      <div class="tp-row">
+        <label class="tp-check"><input type="checkbox" data-key="${row.key}" ${checked}> <span class="tp-dot" style="background:${color}"></span></label>
+        <div class="tp-main">
+          <div class="tp-title">${row.title}</div>
+          <div class="tp-sub">${row.when} · ${row.meta}</div>
+        </div>
+        ${statHtml}
+        <div class="tp-actions">${actionsHtml}</div>
+      </div>`;
+  }
+
+  panel.innerHTML = html;
+
+  const checkboxes = panel.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(checkbox => {
+    checkbox.addEventListener('change', async (e) => {
+      const key = e.target.dataset.key;
+      const row = rows.find(r => r.key === key);
+      if (row) await testsPanelToggle(row, e.target.checked);
+    });
+  });
+}
+
+async function testsPanelToggle(row, checked) {
+  try {
+    let idx = series.findIndex(s => s.name === row.seriesName);
+    if (checked && idx < 0) {
+      if (row.key === 'board') {
+        await window.multiAddBoardHistory();
+      } else {
+        const pts = await multiFetchTestPoints(row.start);
+        multiPutSeries({ name: row.seriesName, points: pts, visible: true, error: pts.length ? '' : 'за этот замер записей нет' });
+      }
+    } else if (idx >= 0) {
+      series[idx].visible = checked;
+    }
+    multiRedraw();
+    renderTestsPanel();
+  } catch (e) {
+    console.error(e);
+    let idx = series.findIndex(s => s.name === row.seriesName);
+    if (idx < 0) {
+      multiPutSeries({ name: row.seriesName, points: [], visible: true, error: 'не удалось получить: ' + e.message });
+      multiRedraw();
+      renderTestsPanel();
+    }
+  }
+}
+
+function testsPanelClear() {
+  for (const s of series) {
+    s.visible = false;
+  }
+  multiRedraw();
+  renderTestsPanel();
+}
+
+async function testsPanelDelete(start, seriesName) {
+  const row = testsPanelRows().find(r => r.start === start);
+  if (!row) return;
+
+  const confirmed = confirm(`Удалить замер «${row.title}»? Файл с ${row.meta.split(' · ')[0].split(' ')[0]} измерениями будет стёрт с флеш-памяти безвозвратно.`);
+  if (!confirmed) return;
+
+  try {
+    const res = await fetch('/api/tests/delete', { method: 'POST', body: String(start) });
+    if (!res.ok) {
+      alert(`Плата не удалила замер (HTTP ${res.status})`);
+      return;
+    }
+    series = series.filter(s => s.name !== seriesName);
+    await multiLoadTestsList();
+    multiRedraw();
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 function bindAssessControls() {

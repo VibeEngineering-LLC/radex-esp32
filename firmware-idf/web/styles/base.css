@@ -341,6 +341,23 @@ td:first-child{white-space:nowrap}
 /* #RADEX-235: то же для строки импорта на «Графиках» — там поле имени и кнопка
    «Импортировать» стояли в btn-row, где поле растягивалось на всю ширину. */
 #tests-list-card .btn-row input[type="text"]{flex:1 1 200px;max-width:320px;margin-bottom:0}
+/* #RADEX-237: панель «Замеры» — строка на ряд: галочка с цветом ряда, имя и
+   период, статистика, кнопки. Заменяет три списка одного и того же. */
+.tp-row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) 0;border-top:1px solid var(--line)}
+.tp-row:first-child{border-top:none}
+.tp-check{display:flex;align-items:center;gap:6px;flex:0 0 auto;cursor:pointer}
+.tp-check input{width:auto;min-height:0;margin:0}
+.tp-dot{width:12px;height:12px;border-radius:3px;flex:0 0 auto}
+.tp-main{flex:1 1 200px;min-width:0}
+.tp-title{font-weight:600}
+.tp-sub{color:var(--dim);font-size:var(--fs-xs)}
+.tp-stat{flex:0 0 auto;text-align:right;font-variant-numeric:tabular-nums;min-width:120px}
+.tp-stat .tp-sub{text-align:right}
+.tp-actions{display:flex;gap:var(--sp-2);flex:0 0 auto}
+@media(max-width:639px){.tp-row{flex-wrap:wrap}.tp-stat{text-align:left;min-width:0}.tp-actions{width:100%}}
+.multi-more{margin-bottom:var(--sp-3)}
+.multi-more summary{cursor:pointer;color:var(--dim);font-size:var(--fs-xs);padding:4px 0}
+.multi-more[open] summary{margin-bottom:var(--sp-2)}
 /* #RADEX-227: вывод архивного заключения на «Графиках». Собственная карточка
    заключения внутри — та же палитра состояний, что у текущего замера
    (.assessment-card .complies/.exceeds/…), но своя, отдельная от него. */

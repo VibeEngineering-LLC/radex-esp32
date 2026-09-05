@@ -1670,6 +1670,19 @@ function updateRadonGauge(current, mean, absError, normative) {
     }
 }
 
+/* #RADEX-259, оператор: «почему цвет Средняя ОА радона и Расчётная среднегодовая
+   ОА радона не красный если результат отрицательный?». Эти две величины несут
+   РЕШЕНИЕ, а не мгновенное показание: их цвет обязан совпадать с вердиктом
+   (красный при «не соответствует»), а не с зоной абсолютной шкалы, где 325 при
+   нормативе 200 попадает всего лишь в оранжевую. Цвет ТЕКУЩЕЙ ОА не трогаем —
+   там цвет числа намеренно совпадает с иглой индикатора (#RADEX-95). */
+function verdictColor(a) {
+  if (!a || !a.verdict) return '';
+  if (a.verdict === 'exceeds') return 'var(--err)';
+  if (a.verdict === 'complies') return 'var(--ok)';
+  return 'var(--warn)';
+}
+
 /* Карточка среднего наверху страницы: заполняется тем же расчётом, что и подпись
    на графике. Считать её отдельно нельзя — два расчёта одной величины разойдутся. */
 function showMeanCard(mean, absError, U) {
@@ -1702,7 +1715,12 @@ function showMeanCard(mean, absError, U) {
      CSS (#radon-mean-unc,#radon-mean-unit — radex.css); здесь докрашиваем
      цветом, который раньше у «сред.» вообще не менялся (оставался
      фиксированным цветом текста, не зоной индикатора). */
-  const zc = zoneColorForValue(mean);
+  /* #RADEX-259: цвет по ВЕРДИКТУ, а не по зоне шкалы. Пока оценки нет
+     (statsData ещё не пришёл) — прежняя окраска по зоне: лучше приблизительный
+     цвет, чем чёрно-белое число. */
+  const a = (typeof statsData === 'object' && statsData) ? statsData.assess : null;
+  const zc = (a && a.verdict && a.verdict !== 'too_short')
+    ? verdictColor(a) : zoneColorForValue(mean);
   v.style.color = zc;
   if (u) u.style.color = zc;
   if (unit) unit.style.color = zc;
@@ -3921,6 +3939,20 @@ function updateAnnualCard(a) {
   const uD = (a && a.u_d_eff > 0) ? a.u_d_eff : (a ? a.u_d : 0);
   v.textContent = (a && a.c > 0) ? String(Math.round(a.c)) : '—';
   if (u) u.textContent = hasBand ? ' ± ' + Math.round(a.c * bandHalfWidth(a.uv, uD)) : '';
+
+  /* #RADEX-259: число, погрешность и единица — одним цветом (по вердикту) и
+     одним начертанием. «± 99» было светлее и тоньше самого числа, хотя это
+     половина одной и той же величины. */
+  /* Пока вердикта нет (too_short), красим по зоне — ровно как соседнюю карточку
+     средней: иначе одно и то же число 108 выходило зелёным слева и жёлтым
+     справа (поймано на плате сразу после правки). */
+  const col = (a && a.verdict && a.verdict !== 'too_short')
+    ? verdictColor(a)
+    : ((a && a.c > 0) ? zoneColorForValue(a.c) : '');
+  const unit = document.getElementById('radon-annual-unit');
+  v.style.color = col;
+  if (u) { u.style.color = col; u.style.fontWeight = '700'; }
+  if (unit) { unit.style.color = col; unit.style.fontWeight = '700'; }
   if (note) {
     note.textContent = hasBand
       ? `неопределённость периода ${a.uv.toFixed(2)} и прибора ${Math.round(uD * 100)} % — интервал сужается по мере теста`

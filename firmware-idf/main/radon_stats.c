@@ -1947,3 +1947,82 @@ time_t radon_stats_test_snapshot(uint32_t *points_out) {
     radon_stats_unlock();
     return start;
 }
+
+/* #RADEX-224, оператор: «делам. анализируем ТОЛЬКО на вкладке графики».
+   Импорт выгрузки прибора НЕ трогает общую историю (в отличие от
+   radon_stats_import_commit, #RADEX-174): принятые строки ложатся отдельным
+   файлом замера /data/test_<первая метка>.csv и живут на «Графиках» —
+   в списке «Сохранённые замеры», с именем и кнопкой «Оценить». Текущие
+   измерения на первой вкладке остаются неприкосновенны (#RADEX-201). */
+time_t radon_stats_import_commit_as_test(int *rows_out) {
+    if (rows_out != NULL) {
+        *rows_out = 0;
+    }
+
+    if (s_import_f == NULL) {
+        return 0;
+    }
+
+    fclose(s_import_f);
+    s_import_f = NULL;
+
+    if (s_import_rows == 0) {
+        remove(import_tmp);
+        return 0;
+    }
+
+    // Найти минимальную метку времени
+    time_t first = 0;
+    FILE *f = fopen(import_tmp, "r");
+    if (f == NULL) {
+        remove(import_tmp);
+        return 0;
+    }
+
+    char line[128];
+    if (fgets(line, sizeof(line), f)) { // Пропустить заголовок
+        while (fgets(line, sizeof(line), f)) {
+            radon_row_t row;
+            if (radon_csv_parse(line, &row) && is_valid_time(row.ts)) {
+                if (first <= 0 || row.ts < first) {
+                    first = row.ts;
+                }
+            }
+        }
+    }
+    fclose(f);
+
+    if (first <= 0) {
+        remove(import_tmp);
+        return 0;
+    }
+
+    if (!radon_stats_lock(RS_LOCK_MS_WRITE)) {
+        remove(import_tmp);
+        return 0;
+    }
+
+    char tf[48];
+    radon_stats_test_file(first, tf, sizeof(tf));
+    if (tf[0] == '\0') {
+        radon_stats_unlock();
+        remove(import_tmp);
+        return 0;
+    }
+
+    remove(tf);
+    if (rename(import_tmp, tf) != 0) {
+        ESP_LOGE(TAG, "Ошибка переименования файла импорта");
+        remove(import_tmp);
+        radon_stats_unlock();
+        return 0;
+    }
+
+    radon_stats_bump_generation();
+    ESP_LOGW(TAG, "#RADEX-224: импорт принят отдельным замером %s, строк: %d", tf, s_import_rows);
+    if (rows_out != NULL) {
+        *rows_out = s_import_rows;
+    }
+    radon_stats_unlock();
+    return first;
+}

@@ -208,6 +208,12 @@ bool radon_stats_import_line(const char *line);
 int  radon_stats_import_commit(void);   /* принято строк данных, -1 — ошибка */
 void radon_stats_import_abort(void);
 
+/* #RADEX-224: тот же приём строк, но результат ложится ОТДЕЛЬНЫМ файлом замера
+   /data/test_<первая метка>.csv, а общая история не меняется вовсе. Оператор:
+   «анализируем ТОЛЬКО на вкладке графики». Возвращает начало импортированного
+   замера (0 — неудача); rows_out (можно NULL) — сколько строк принято. */
+time_t radon_stats_import_commit_as_test(int *rows_out);
+
 // Последнее записанное значение радона (NAN, если записей нет).
 // Нужно после перезагрузки: иначе первое значение примут за новое.
 float radon_stats_last_radon(void);

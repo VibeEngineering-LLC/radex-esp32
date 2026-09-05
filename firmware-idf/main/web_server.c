@@ -1222,6 +1222,44 @@ static esp_err_t handle_history_import_body(httpd_req_t *req)
         }
     }
 
+    /* #RADEX-224: один и тот же приёмник тела обслуживает ДВА маршрута, различает
+       их только фиксация. Условие ПРЯМОЕ и блочное: после этого блока идёт прежний
+       путь /api/history/import, который заменяет общую историю. Инверсия с ранним
+       return убила бы старый маршрут — он бы отвечал ошибкой на годный импорт. */
+    if (strncmp(req->uri, "/api/tests/import", 17) == 0) {
+    // Завершаем импорт как отдельный замер
+    int rows = 0;
+    time_t start = radon_stats_import_commit_as_test(&rows);
+    if (start <= 0) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                            "импорт отклонён: годных строк с датой нет либо хранилище занято");
+        return ESP_FAIL;
+    }
+
+    // Пытаемся извлечь метку из строки запроса
+    char q[96], val[32];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "label", val, sizeof(val)) == ESP_OK) {
+        radon_stats_test_label_set(start, val);
+    }
+
+    // Читаем сохранённую метку
+    char stored[32] = {0};
+    radon_stats_test_label_get(start, stored, sizeof(stored));
+
+    // Формируем JSON-ответ
+    char rout[128];
+    int rlen = snprintf(rout, sizeof(rout), "{\"ok\":true,\"start\":%lld,\"rows\":%d,\"label\":\"%s\"}",
+                        (long long)start, rows, stored);
+    if (rlen < 0 || rlen >= (int)sizeof(rout)) {
+        return httpd_resp_send_500(req);
+    }
+
+    // Отправляем ответ
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, rout, rlen);
+    }
+
     int n = radon_stats_import_commit();
     if (n < 0) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "импорт отклонён: годных строк нет либо хранилище занято");
@@ -1437,6 +1475,7 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/test",      .method = HTTP_POST, .handler = handle_test_ctl },
     { .uri = "/api/history/range", .method = HTTP_GET, .handler = handle_history_range },
     { .uri = "/api/history/import", .method = HTTP_POST, .handler = handle_history_import },   /* #RADEX-174 */
+    { .uri = "/api/tests/import", .method = HTTP_POST, .handler = handle_history_import },   /* #RADEX-224: тот же приёмник, другая фиксация */
     { .uri = "/api/assess", .method = HTTP_GET, .handler = handle_assess },
     { .uri = "/api/method/tables", .method = HTTP_GET, .handler = handle_method_tables },   /* #RADEX-225 */
     { .uri = "/api/cycle", .method = HTTP_GET, .handler = handle_cycle },

@@ -15,7 +15,7 @@
         <!-- Два варианта подписи: на узком экране пять полных названий не помещаются
              и строка вкладок начинает переноситься. Переключает CSS (.t-short/.t-long). -->
         <li class="tab" role="tab" aria-selected="true" data-tab="data"><span class="t-long">Результаты измерений</span><span class="t-short">Данные</span></li>
-        <li class="tab" role="tab" aria-selected="false" data-tab="method"><span class="t-long">Соответствие нормативу</span><span class="t-short">Норматив</span></li>
+        <li class="tab" role="tab" aria-selected="false" data-tab="method"><span class="t-long">Заключение</span><span class="t-short">Заключение</span></li>
         <!-- #RADEX-210, оператор 03.09: «Сделать отдельную вкладку “метод”».
              Стоит сразу за «Соответствием»: с той вкладки на неё ведёт кнопка
              «Важно ознакомиться перед началом тестов», и порядок чтения выходит
@@ -150,7 +150,7 @@
                Узлы удалены, а не спрятаны стилем: applyAssess() проверяет
                наличие каждого перед записью. -->
           <div class="text" id="assessment-text">Данных пока недостаточно для оценки</div>
-          <div class="meta" id="assessment-hint" style="margin-top:6px">Закладка «Соответствие нормативу» содержит более подробную информацию</div>
+          <div class="meta" id="assessment-hint" style="margin-top:6px">Закладка «Заключение» содержит более подробную информацию</div>
         </div>
       </div>
 
@@ -452,12 +452,17 @@
           <div class="note-head">Инструментальная неопределённость, % (k=2)</div>
           <div class="sub">Рекомендуется задавать 30 %, а лучше более консервативное значение 40 %, если на экране монитора не отображается неопределенность (или погрешность в абсолютных единицах) измеряемой ОА радона, которая должна учитывать статистическую и систематическую (калибровочную) компоненты, согласно положениям Рационального Метода.</div>
         </div>
-        <div class="sub" style="margin-top:var(--sp-3)">Оба параметра задаются на вкладке «Соответствие нормативу», в блоке «Параметры рационального критерия оценки соответствия».</div>
+        <div class="sub" style="margin-top:var(--sp-3)">Оба параметра задаются на вкладке «Заключение», в блоке «Параметры рационального критерия оценки соответствия».</div>
       </div>
 
       <div class="card">
         <h2 class="section-title" id="m-src">Информация о Рациональном Методе и других источниках данных</h2>
         <ol>
+          <!-- #RADEX-231, оператор 05.09: прямая ссылка на текст проекта методики.
+               Это первоисточник, по которому считает прошивка, — он идёт первым.
+               Ссылка ведёт на сайт издания, не на копию файла в нашем репозитории
+               (ту оператор велел убрать 04.09, #RADEX-15). -->
+          <li>Цапалов А. А. Методика радиационного контроля радона в зданиях (проект), 2025. <a href="https://doza.editorum.ru/ru/storage/download/202553" target="_blank" rel="noopener">полный текст (PDF)</a></li>
           <li>Оценка соответствия помещений зданий требованиям Норм радиационной безопасности по ограничению содержания радона в воздухе. Методика радиационного контроля (проект). АНРИ. 2025. № 1(120). С. 75-95. <a href="https://doza.editorum.ru/ru/nauka/article/98146/view" target="_blank" rel="noopener">doza.editorum.ru</a></li>
           <li>Цапалов А.А., Киселев С.М., Ковлер К.Л., Микляев П.С., Петрова Т.Б., Жуковский М.В., Ярмошенко И.В., Маренный А.М., Тутельян О.Е., Кувшинников С.И. Стандартизация контроля радона в зданиях на основе рационального критерия оценки соответствия // Радиационная гигиена. 2023. Т. 16, № 4. С. 84-104. <a href="https://doi.org/10.21514/1998-426X-2023-16-4-84-104" target="_blank" rel="noopener">doi.org/10.21514/1998-426X-2023-16-4-84-104</a></li>
           <li>Tsapalov, A.; Kranrod, C. Measurement Duration for Reliable Indoor Radon Testing. Atmosphere 2026, 17, 706. <a href="https://doi.org/10.3390/atmos17070706" target="_blank" rel="noopener">doi.org/10.3390/atmos17070706</a></li>
@@ -803,6 +808,21 @@
       <div class="card" id="tests-list-card">
         <div class="card-title">Сохранённые замеры</div>
         <div id="tests-list" class="sub">загрузка…</div>
+        <!-- #RADEX-224, оператор: «делам. анализируем ТОЛЬКО на вкладке графики».
+             Выгрузка прибора приходит СЮДА и становится ещё одним сохранённым
+             замером — общая история платы и идущий замер не меняются вовсе
+             (в отличие от /api/history/import, который историю заменяет). -->
+        <div class="form-group" style="margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line);margin-bottom:0">
+          <label for="import-file">Загрузить выгрузку прибора (CSV) как отдельный замер</label>
+          <input type="file" id="import-file" accept=".csv,text/csv">
+          <div class="btn-row" style="margin-top:8px">
+            <input type="text" id="import-label" maxlength="24" placeholder="имя замера, например kvartira-2"
+                   aria-label="имя импортируемого замера">
+            <button type="button" id="btn-import-test">Импортировать</button>
+          </div>
+          <div class="sub" id="import-note" style="font-size:var(--fs-xs);margin-top:6px">
+            файл готовит <code>scripts/radexdc_csv_to_history.py</code> из выгрузки RadexDC; текущие измерения не затрагиваются</div>
+        </div>
       </div>
       <!-- #RADEX-227, оператор: «оценку по архивным записям перенеси на вкладку
            графики. Эта оценка будет выводиться по выбранным файлам и не будет
@@ -4356,10 +4376,80 @@ function bindTestLabel() {
    «Графиках» (#assess-arch-out), возвращать нечего.
    #RADEX-228: здесь же привязывается имя замера — обе вещи про одно и то же
    место интерфейса и должны включаться одним вызовом, чтобы не разъехаться. */
+/* #RADEX-224: загрузка выгрузки прибора со страницы. Живёт на «Графиках»
+   рядом со списком замеров — оператор: «анализируем ТОЛЬКО на вкладке
+   графики». Тело запроса — сам CSV, имя замера уходит параметром label. */
+function bindTestImport() {
+  const input = document.getElementById('import-file');
+  const label = document.getElementById('import-label');
+  const button = document.getElementById('btn-import-test');
+  const note = document.getElementById('import-note');
+
+  if (!input || !label || !button || !note) return;
+
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      if (!input.files || !input.files.length) {
+        note.textContent = 'сначала выберите файл выгрузки';
+        return;
+      }
+
+      const file = input.files[0];
+      if (file.size > 256 * 1024) {   /* плата: RADON_IMPORT_MAX_BYTES = 262144 (web_server.c:1152) */
+        const kb = Math.floor(file.size / 1024);
+        note.textContent = `файл слишком большой: ${kb} КБ, плата принимает до 256 КБ`;
+        return;
+      }
+
+      const text = await file.text();
+      if (!text) {
+        note.textContent = 'файл пуст';
+        return;
+      }
+
+      let url = '/api/tests/import';
+      if (label.value.trim()) {
+        url += '?label=' + encodeURIComponent(label.value.trim());
+      }
+
+      const response = await fetch(url, {
+        method: 'POST',
+        body: text
+      });
+
+      if (!response.ok) {
+        note.textContent = `плата отклонила импорт (HTTP ${response.status})`;
+        return;
+      }
+
+      const data = await response.json();
+      const dateStr = new Date(data.start * 1000).toLocaleString('ru-RU');
+      let msg = `импортировано строк: ${data.rows}; замер от ${dateStr}`;
+      if (data.label) {
+        msg += ` · имя «${data.label}»`;
+      }
+      note.textContent = msg;
+
+      if (typeof multiLoadTestsList === 'function') {
+        await multiLoadTestsList();
+      }
+
+      input.value = '';
+    } catch (e) {
+      console.error(e);
+      note.textContent = `не удалось импортировать: ${e.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
 function bindAssessControls() {
   const applyBtn = document.getElementById('assess-apply');
   if (applyBtn) applyBtn.addEventListener('click', archAssessRange);
   bindTestLabel();
+  bindTestImport();   /* #RADEX-224 */
 }
 
     function showLog() {

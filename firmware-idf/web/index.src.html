@@ -189,6 +189,11 @@
          фраза («табличные и заданные значения приводятся ниже»). -->
     <div id="verdict_facts" class="sub" style="margin-top:10px"></div>
     <div id="verdict_text" class="sub" style="margin-top:10px"></div>
+    <!-- #RADEX-250, оператор 05.09: «и такую же вкладку на странице заключение».
+         Тот же свёрнутый расчёт, что под заключением на «Графиках», и та же
+         функция: два места, показывающие вердикт, обязаны объяснять его
+         одинаково. Заполняется в applyAssess(). -->
+    <div id="verdict_method"></div>
   </div>
 
   <!-- #RADEX-213: кнопка стоит под заключением, а не в отдельной колонке справа.
@@ -254,9 +259,15 @@
 <div class="assess-grid">
         <div class="form-group">
           <label for="normative">Нормативная величина в единицах среднегодовой ОА радона</label>
+          <!-- #RADEX-253, оператор 05.09: «и добавь американский». Уровень
+               действия US EPA — 4 pCi/L, то есть 148 Бк/м³ по ОА (перевод ×37).
+               Международные нормативы задаются сразу по ОА радона-222 — тому,
+               что показывает монитор; российские планки заданы по ЭРОА и здесь
+               уже удвоены (200 ЭРОА ↔ 400 ОА). -->
           <select id="normative">
-            <option value="200">200 Бк/м³ — новые и реконструированные здания</option>
-            <option value="400">400 Бк/м³ — эксплуатируемые здания</option>
+            <option value="200">200 Бк/м³ — РФ, новые и реконструированные здания</option>
+            <option value="400">400 Бк/м³ — РФ, эксплуатируемые здания</option>
+            <option value="148">148 Бк/м³ — США, US EPA action level (4 pCi/L)</option>
           </select>
           <!-- #RADEX-79, формулировка оператора дословно. Планки НРБ заданы по ЭРОА
                (вдвое меньшими числами) — без этой оговорки читатель, сверяясь с
@@ -1754,7 +1765,11 @@ function boxesOverlap(a, b) {
 function drawMeanPlaque(ctx, mean, absError, relErr, count, geom, color, opts) {
   opts = opts || {};
   const showCount = opts.showCount !== false;
-  const txt = `среднее ${Math.round(mean)} ± ${Math.round(absError)} Бк/м³`;
+  /* #RADEX-251, оператор: «в голубом блоке выведи не среднее а расчетное
+     среднегодовое с доверительным интервалом». Подпись передаётся снаружи:
+     на «Показаниях» плашка по-прежнему про среднее за показанный период, на
+     «Графиках» — про расчётную среднегодовую по методике. */
+  const txt = `${opts.label || 'среднее'} ${Math.round(mean)} ± ${Math.round(absError)} Бк/м³`;
   const sub = showCount ? `${count} изм. за показанный период` : null;
   ctx.font = 'bold 13px sans-serif';
   const w = Math.max(ctx.measureText(txt).width, sub ? ctx.measureText(sub).width : 0) + 16;
@@ -1827,7 +1842,11 @@ function drawNormativeBadge(ctx, normative, geom, color, avoidBox, skipLabel) {
   ctx.font = '12px sans-serif';
   const tw = ctx.measureText(normText).width;
   const nbx = leftMargin + 4;
-  let nby = Math.max(topMargin + 4, Math.min(height - bottomMargin - 22, yNorm - 11));
+  /* #RADEX-251, оператор: «надпись норматив вынеси наверх на уровень голубого
+     блока со средним». Подпись больше не едет за своей линией: она стоит в
+     верхнем ряду слева, напротив плашки расчётной среднегодовой справа. Саму
+     линию норматива это не двигает — она там, где ей положено по шкале. */
+  let nby = topMargin + 4;
   const box = { x: nbx, y: nby, w: tw + 12, h: 20 };
   /* #RADEX-140: avoidBox теперь принимает как одиночный прямоугольник (как
      раньше — бейдж среднего с «Графиков»), так и массив прямоугольников —
@@ -1953,6 +1972,14 @@ let visibleRange = null;
    пресет): пока он опущен, вид следует за данными. */
 let dataRange = null;
 let viewLocked = false;
+/* #RADEX-248: последний ответ платы за показанный период. Из него график берёт
+   полуширину интервала ПО МЕТОДИКЕ — √(UV(t)² + U_И²) с инструментальной
+   неопределённостью из настроек ПЛАТЫ. Второй раз на странице её не считаем:
+   расхождение с заключением под графиком было бы неотличимо от ошибки расчёта.
+   Объявлена здесь, выше multiRedraw(), а не рядом с assessFromView(): let в
+   зоне временнóй мёртвой зоны бросает ReferenceError, если отрисовка случится
+   раньше объявления. */
+let assessViewData = null;
 /* Ряд с тем же именем ЗАМЕНЯЕТСЯ, а не добавляется копией: повторное нажатие
    «Вся история платы» — обычное дело (история пополнилась), а список из шести
    одинаковых строк не несёт никакого смысла и мешает сравнивать. Видимость
@@ -2482,7 +2509,17 @@ function multiRedraw() {
             ? Math.sqrt(vals.reduce((a, o) => a + (o.v - mv) * (o.v - mv) * o.w, 0)
                         / ((vals.length - 1) * wtot)) / mv
             : 0;
-          const relTot = Math.sqrt(uStatRel * uStatRel + uInstRel * uInstRel);
+          /* #RADEX-248, оператор: «выведи вокруг среднего расчётный доверительный
+             интервал по методике». Статистическая ошибка среднего к решению о
+             соответствии отношения не имеет — методика оперирует √(UV(t)²+U_И²),
+             и ровно эта величина стоит в заключении под графиком. Пока плата не
+             ответила (первая отрисовка) остаётся прежний расчёт: пустая плашка
+             хуже приблизительной. */
+          const relTot = (assessViewData && assessViewData.verdict !== 'too_short'
+                          && isFinite(assessViewData.uv) && assessViewData.uv >= 0
+                          && isFinite(assessViewData.u_d_eff))
+            ? bandHalfWidth(assessViewData.uv, assessViewData.u_d_eff)
+            : Math.sqrt(uStatRel * uStatRel + uInstRel * uInstRel);
           /* #RADEX-146: прямоугольник HTML-кнопки полноэкранного режима
              (#RADEX-137) в тех же координатах, что остальные avoidBox — CSS-
              пиксели относительно rect (вычислен выше, в начале multiRedraw()).
@@ -2504,8 +2541,21 @@ function multiRedraw() {
              #RADEX-133: результат (свой прямоугольник) сохраняется в
              meanBadgeBox — на узком canvas normativeBadge (рисуется чуть
              ниже, внутри multiDrawOverlays) уходит под него при столкновении. */
-          meanBadgeBox = drawMeanPlaque(multiCtx, mv, mv * relTot, relTot, wtot,
-            { width, rightMargin: PADR, topMargin: PADT }, C.mean, { avoidBox: fsBtnBox });
+          /* #RADEX-251: в плашке — РАСЧЁТНАЯ СРЕДНЕГОДОВАЯ по методике, а не
+             среднее по нарисованным точкам. Центр берётся у платы (assessViewData.c):
+             она считает по всем записям файла в интервале, а на графике точки
+             прорежены, и два числа расходились (320 против 306) при одинаковой
+             подписи «среднее». Пока плата не ответила — прежнее среднее по точкам. */
+          /* Короткий тест исключён намеренно: при too_short методика расчётной
+             среднегодовой НЕ даёт (uv/kp не определены), и называть так среднее
+             за двое суток — выдавать несуществующую величину за посчитанную. */
+          const useMethod = assessViewData && assessViewData.verdict !== 'too_short'
+                            && isFinite(assessViewData.c) && assessViewData.c > 0
+                            && isFinite(assessViewData.uv) && assessViewData.uv >= 0;
+          const plaqueVal = useMethod ? assessViewData.c : mv;
+          meanBadgeBox = drawMeanPlaque(multiCtx, plaqueVal, plaqueVal * relTot, relTot, wtot,
+            { width, rightMargin: PADR, topMargin: PADT }, C.mean,
+            { avoidBox: fsBtnBox, label: useMethod ? 'расчётная среднегодовая' : 'среднее' });
         }
       }
 
@@ -3061,17 +3111,33 @@ function multiDrawOverlays(ctx, points, geom, colors, opts) {
 
   let sum = 0;
   for (const p of validPoints) sum += p.r;
-  const mean = sum / validPoints.length;
+  const meanPts = sum / validPoints.length;
 
   // Статистическая погрешность: стандартное отклонение по (n - 1)
   let s = 0;
   for (const p of validPoints) {
-    s += Math.pow(p.r - mean, 2);
+    s += Math.pow(p.r - meanPts, 2);
   }
-  const uStat = validPoints.length > 1 ? (Math.sqrt(s / (validPoints.length - 1)) / Math.sqrt(validPoints.length)) / mean : 0;
+  const uStat = validPoints.length > 1 ? (Math.sqrt(s / (validPoints.length - 1)) / Math.sqrt(validPoints.length)) / meanPts : 0;
 
-  // Суммарная погрешность: дисперсии складываются
-  const U = Math.sqrt(uStat * uStat + uInst * uInst);
+  /* #RADEX-251, оператор: «на графике выведи расчетное среднегодовое пунктиром и
+     доверительный интервал». Центр линии — величина ПЛАТЫ за показанный период
+     (по всем записям файла), а не среднее по прореженным и сглаженным точкам:
+     иначе линия стоит не там, где число в плашке и в заключении. */
+  const mean = (assessViewData && assessViewData.verdict !== 'too_short'
+                && isFinite(assessViewData.c) && assessViewData.c > 0)
+    ? assessViewData.c : meanPts;
+
+  /* #RADEX-248: полоса вокруг среднего — доверительный интервал ПО МЕТОДИКЕ,
+     √(UV(t)² + U_И²) от платы, та же величина, что в заключении под графиком и
+     на плашке среднего. Прежний расчёт (статистическая ошибка + инструментальная
+     из настроек страницы) остаётся запасным на первую отрисовку, пока плата не
+     ответила: три числа «±» на одном экране расходились между собой. */
+  const U = (assessViewData && assessViewData.verdict !== 'too_short'
+             && isFinite(assessViewData.uv) && assessViewData.uv >= 0
+             && isFinite(assessViewData.u_d_eff))
+    ? bandHalfWidth(assessViewData.uv, assessViewData.u_d_eff)
+    : Math.sqrt(uStat * uStat + uInst * uInst);
   const halfWidth = mean * U;
 
   // Рисуем полосу погрешности
@@ -3884,6 +3950,11 @@ function applyAssess(a, source) {
       : '';
     vText.textContent = [w.note, tail].filter(Boolean).join(' ');
   }
+  /* #RADEX-250: расчёт по методике — той же функцией, что на «Графиках».
+     Пусто при too_short: пока заключения нет, объяснять нечего. */
+  const vMethod = document.getElementById('verdict_method');
+  if (vMethod) vMethod.innerHTML = assessMethodHtml(a);
+
   fillMethodTableVals(a);
   updateAnnualCard(a);   /* #RADEX-226 */
 
@@ -3943,6 +4014,7 @@ async function assessFromView() {
     const src = assessViewSource();
     if (!src) {
       assessViewKey = '';
+      assessViewData = null;   /* #RADEX-248: полоса не должна пережить свой ряд */
       out.textContent = 'отметьте файл галочкой — заключение считается по периоду, показанному на графике';
       return;
     }
@@ -3966,7 +4038,19 @@ async function assessFromView() {
     const r = await fetch('/api/assess?' + p, { cache: 'no-store' });
     if (!r.ok) throw new Error('плата ответила ' + r.status);
 
-    renderArchAssess(await r.json(), src.name + ' · период, показанный на графике');
+    const data = await r.json();
+    renderArchAssess(data, src.name + ' · период, показанный на графике');
+
+    /* #RADEX-248: числа методики пришли — график перерисовывается, чтобы полоса
+       и подпись среднего встали по ним. Зацикливания нет: перерисовка снова
+       поставит пересчёт в очередь, но границы окна те же и ключ совпадёт, так
+       что до запроса к плате дело не дойдёт. */
+    const before = assessViewData;
+    assessViewData = data;
+    if (!before || before.uv !== data.uv || before.c !== data.c ||
+        before.u_d_eff !== data.u_d_eff) {
+      multiRedraw();
+    }
   } catch (e) {
     assessViewKey = '';
     console.error(e);
@@ -3977,6 +4061,105 @@ async function assessFromView() {
 function assessFromViewSoon() {
   clearTimeout(assessViewTimer);
   assessViewTimer = setTimeout(assessFromView, 400);
+}
+
+function assessMethodHtml(a) {
+  /* #RADEX-250: при too_short раньше возвращалась пустая строка. На «Графиках»
+     это незаметно (там и заключения нет), а на «Заключении» вкладка просто
+     исчезала — читается как поломка, хотя причина в другом: тест ещё короткий.
+     Теперь причина и порог показываются, критерии — нет (их не считали). */
+  if (!a || !(a.c > 0)) return '';
+
+  const { c, uv, kp, crit1, crit2, days, c_rl, u_d_eff, restricted } = a;
+
+  const formatNum = (x, digits) => Number.isFinite(x) ? Number(x).toFixed(digits) : '—';
+  const fmt1 = formatNum(c, 1);
+  const fmt2 = formatNum(uv, 2);
+  const fmt3 = formatNum(u_d_eff, 2);
+  const fmt4 = formatNum(crit1, 1);
+  const fmt5 = formatNum(c_rl, 1);
+
+  const html = [];
+
+  // Строка величин
+  html.push('<div class="mc-vals">');
+  html.push(`<span class="mc-chip">режим = ${restricted ? 'ограниченный' : 'нормальный'}</span>`);
+  html.push(`<span class="mc-chip">U_V(t) = ${fmt2}</span>`);
+  /* #RADEX-249: U_И показывается ЯВНО. Без неё расхождение с посторонним
+     калькулятором необъяснимо: там обычно стоит 20 % по умолчанию, а плата
+     берёт значение из своих настроек — числа расходятся не из-за формул, а
+     из-за разных входных данных, и это должно быть видно на экране. */
+  html.push(`<span class="mc-chip">U_И = ${fmt3} (настройка платы)</span>`);
+  if (kp > 0) html.push(`<span class="mc-chip">K_p(t) = ${formatNum(kp, 2)}</span>`);
+  html.push(`<span class="mc-chip">t = ${days} сут.</span>`);
+  html.push('</div>');
+
+  /* #RADEX-250: короткий тест — критерии не считались, показывать нечего кроме
+     причины. Порог зависит от режима: 4 суток при нормальной вентиляции,
+     2 при ограниченной (radon_stats.c, проверка `days < 2` плюс узлы таблицы,
+     которые в нормальном режиме начинаются с 4 суток). */
+  if (a.verdict === 'too_short') {
+    const need = restricted ? 2 : 4;
+    html.push(`<div class="mc-calc mc-off">t = ${days} сут. — заключение по методике даётся с ${need} суток `
+      + `(${restricted ? 'ограниченный' : 'нормальный'} режим вентиляции), критерии ещё не считались.</div>`);
+    return `<details class="method-check"><summary class="mc-head">Расчёт по методике</summary>${html.join('')}</details>`;
+  }
+
+  // Критерий (1)
+  const sign1 = crit1 < c_rl ? '&lt;' : '≥';
+  const result1 = crit1 < c_rl ? '<b>выполнен</b>' : '<b>не выполнен</b>';
+  html.push('<div class="mc-rule">Критерий (1) — «соответствует», §4.2.1: C(t)·[1 + √(U_V² + U_И²)] &lt; C_ну</div>');
+  html.push(`<div class="mc-calc">${fmt1} · [1 + √(${fmt2}² + ${fmt3}²)] = ${fmt4} ${sign1} ${fmt5} Бк/м³ → ${result1}</div>`);
+
+  // Критерий (2)
+  if (kp > 0 && !restricted) {
+    const sign2 = crit2 > c_rl ? '&gt;' : '≤';
+    const result2 = crit2 > c_rl ? '<b>выполнен</b>' : '<b>не выполнен</b>';
+    html.push('<div class="mc-rule">Критерий (2) — «не соответствует», §4.2.2: C(t)/K_p(t)·[1 − U_И] &gt; C_ну</div>');
+    html.push(`<div class="mc-calc">${fmt1} / ${formatNum(kp, 2)} · [1 − ${fmt3}] = ${formatNum(crit2, 1)} ${sign2} ${fmt5} Бк/м³ → ${result2}</div>`);
+  } else if (restricted) {
+    html.push('<div class="mc-calc mc-off">критерий (2) в ограниченном режиме не определён</div>');
+  }
+
+  // Правило 9 месяцев
+  if (crit1 >= c_rl) {
+    const sign3 = days >= 270 ? '≥' : '&lt;';
+    const result3 = days >= 270 ? '<b>выполнен</b>' : '<b>не выполнен</b>';
+    html.push('<div class="mc-rule">Правило 9 месяцев, §7.1.2: критерий (1) не выполнен И t ≥ 9 месяцев</div>');
+    html.push(`<div class="mc-calc">t = ${days} сут. ${sign3} 270 сут. → ${result3}</div>`);
+  }
+
+  // Итог
+  if (a.verdict === 'ok') {
+    html.push('<div class="mc-total">Итог: критерий (1) выполнен — помещение признаётся соответствующим нормативу (§7.1.1).</div>');
+  } else if (a.verdict === 'exceeds') {
+    /* Прошивка признаёт превышение по ДВУМ разным причинам (radon_stats.c:666:
+       `exceed || days >= 270`), и человеку важно, по какой именно: сработавший
+       критерий (2) — это измеренное превышение, а правило 9 месяцев — исчерпание
+       времени без доказанного соответствия. */
+    const byCrit2 = kp > 0 && !restricted && crit2 > c_rl;
+    html.push('<div class="mc-total">Итог: ' + (byCrit2
+      ? 'критерий (1) не сработал, но сработал критерий (2)'
+      : 'критерий (1) не сработал, а продолжительность достигла 9 месяцев')
+      + ' — помещение признаётся не соответствующим нормативу (§7.1.2).</div>');
+  } else if (a.verdict === 'gray') {
+    html.push('<div class="mc-total">Итог: ни один критерий не сработал — решение не принято, требуется продолжить измерение либо снизить концентрацию (§7.1.3).</div>');
+  }
+
+  // Предупреждение о таблице
+  /* Последний узел таблицы — 360 суток (проверено запросом /api/method/tables у
+     платы: normal кончается [360, 0.00, 1.00]). Дальше значения не растут и не
+     убывают — берётся последний узел, и об этом надо сказать вслух. */
+  if (days > 360) {
+    html.push('<div class="mc-note">свыше 360 суток (12 месяцев) — за пределами таблицы: приняты значения последнего узла, U_V = 0.</div>');
+  }
+
+  /* #RADEX-249, оператор: «сделай под блоком заключения вкладку с расчетами».
+     Свёрнуто по умолчанию: в обычной работе нужен вердикт, а расчёт открывают,
+     когда числа с чем-то не сходятся. Первая версия (#RADEX-238) вываливала всё
+     это в заключение — оператор велел убрать («так расписывать не нужно»),
+     и разница именно в том, что теперь оно за кнопкой. */
+  return `<details class="method-check"><summary class="mc-head">Расчёт по методике</summary>${html.join('')}</details>`;
 }
 
 function renderArchAssess(a, sourceText) {
@@ -4036,7 +4219,9 @@ function renderArchAssess(a, sourceText) {
     html += `<div>Норматив: ${a.c_rl} Бк/м³</div>`;
   }
 
-  html += '</div></div></div>';   /* .sub → .content → .assessment-card */
+  html += '</div>';                 /* .sub */
+  html += assessMethodHtml(a);      /* #RADEX-249: свёрнутый расчёт */
+  html += '</div></div>';           /* .content → .assessment-card */
   out.innerHTML = html;
 }
 
@@ -4228,12 +4413,18 @@ function seriesSummary(points) {
 
 function testsPanelRows() {
   const rows = [];
+  /* #RADEX-247, оператор 05.09: «исправь на текущий замер. тогда его можно не
+     удалять». Это не файл на флеше, а идущее измерение целиком — единственная
+     строка без кнопки удаления, и название теперь об этом говорит. */
+  /* #RADEX-252: имя и объём идущего замера переехали СЮДА — раньше их несла
+     отдельная строка снимка, которая дублировала эту. */
+  const running = testsCache.find(t => t && t.active);
   rows.push({
     key: 'board',
     seriesName: 'текущая сессия',
-    title: 'история платы',
-    when: 'все записи флеш',
-    meta: '',
+    title: running && running.label ? 'текущий замер · ' + running.label : 'текущий замер',
+    when: running ? new Date(running.start * 1000).toLocaleString('ru-RU') : 'все записи флеш',
+    meta: running ? `${running.points} изм · ${testsFormatSpan(running.span_sec)} · идёт сейчас` : '',
     start: 0,
     active: false,
     deletable: false
@@ -4241,6 +4432,12 @@ function testsPanelRows() {
 
   const sortedTests = [...testsCache].sort((a, b) => b.start - a.start);
   for (const test of sortedTests) {
+    /* #RADEX-252, оператор: «или он дублирует текущий замер?» — да, дублировал.
+       Снимок ИДУЩЕГО замера и строка «текущий замер» выше — одно и то же
+       измерение, показанное дважды: отсюда и вопрос «как удалить kvartira-1»
+       (никак: плата отклоняет удаление активного, P-034). Файл никуда не
+       девается и появится в списке сам, когда замер перестанет быть текущим. */
+    if (test.active) continue;
     const dateStr = new Date(test.start * 1000).toLocaleString('ru-RU');
     const seriesName = 'замер ' + dateStr;
     rows.push({
@@ -4248,10 +4445,10 @@ function testsPanelRows() {
       seriesName,
       title: test.label || 'замер',
       when: dateStr,
-      meta: `${test.points} изм · ${testsFormatSpan(test.span_sec)}${test.active ? ' · идёт сейчас' : ''}`,
+      meta: `${test.points} изм · ${testsFormatSpan(test.span_sec)}`,
       start: test.start,
-      active: test.active,
-      deletable: !test.active
+      active: false,
+      deletable: true
     });
   }
 
@@ -4276,7 +4473,12 @@ function renderTestsPanel() {
       } else if (s.visible && s.points.length) {
         const summary = seriesSummary(s.points);
         if (summary) {
-          statHtml = `<div class="tp-stat">${Math.round(summary.mean)} ± ${Math.round(summary.err)} Бк/м³<br>${summary.n} точек на графике</div>`;
+          /* #RADEX-251: «±» из перечня убрано. Здесь оно считалось статистически
+             (ошибка среднего плюс инструментальная из поля страницы) и было
+             ЧЕТВЁРТЫМ числом «±» на экране — при 320 ± 96 в плашке, полосе и
+             заключении перечень показывал 320 ± 64. Среднее по нарисованным
+             точкам остаётся: оно про ряд на графике, а не про заключение. */
+          statHtml = `<div class="tp-stat">${Math.round(summary.mean)} Бк/м³<br>${summary.n} точек на графике</div>`;
         } else {
           statHtml = `<div class="tp-stat">скрыт</div>`;
         }

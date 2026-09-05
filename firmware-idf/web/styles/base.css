@@ -403,7 +403,23 @@ td:first-child{white-space:nowrap}
 .grid .card .status-bar{justify-content:center}
 
 /* #RADEX-239/240/242: сняты вместе со своими блоками — таблица средних за
-   периоды (`.periods-card table`), строка полей интервала (`.assess-arch
-   .chart-controls`) и стили разбора по методу (`.method-check`, `.mc-*`).
-   Заключение теперь считается по окну графика, вводить интервал руками
-   и дублировать средние таблицей больше негде. */
+   периоды (`.periods-card table`) и строка полей интервала (`.assess-arch
+   .chart-controls`): заключение считается по окну графика, вводить интервал
+   руками и дублировать средние таблицей больше негде. */
+
+/* #RADEX-249: расчёт по методике вернулся ВКЛАДКОЙ под заключением (оператор:
+   «сделай под блоком заключения вкладку с расчетами»). Формулы с подстановкой —
+   моноширинными плашками: в них важно посимвольное чтение, а пропорциональный
+   шрифт сбивает выравнивание знаков и степеней. */
+.method-check{margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line)}
+.mc-head{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.04em;opacity:.75;cursor:pointer}
+.method-check[open] .mc-head{margin-bottom:var(--sp-2)}
+.mc-vals{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:var(--sp-3)}
+.mc-chip{border:1px solid var(--line);border-radius:var(--radius);padding:2px 8px;font-size:var(--fs-xs);white-space:nowrap}
+.mc-rule{font-size:var(--fs-xs);font-weight:600;margin-top:var(--sp-2)}
+.mc-calc{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:var(--fs-xs);
+  border:1px solid var(--line);border-radius:var(--radius);padding:4px 8px;margin-top:4px;
+  overflow-x:auto;white-space:nowrap}
+.mc-off{opacity:.6;font-style:italic;white-space:normal}
+.mc-total{margin-top:var(--sp-3);font-size:var(--fs-xs);font-weight:600}
+.mc-note{margin-top:var(--sp-2);font-size:var(--fs-xs);opacity:.7}

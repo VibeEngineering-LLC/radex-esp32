@@ -2116,11 +2116,38 @@ function multiBindMetrics() {
   });
 }
 
+/* #RADEX-260, оператор: «и температура с влажностью не работают». Переключатели
+   исправны — в показанных рядах ПРОСТО НЕТ этих величин: выгрузка прибора несёт
+   только радон (в нашем формате импорта колонки temp/hum заполнены `nan`), и
+   линия молча не рисовалась. Проверено на плате: у файла `pd22209010007_podval_11`
+   c/h пусты во всех 1057 точках, а у собственной истории платы — 25,3 °C и 52 %.
+   Молчание и было дефектом: включил величину — ничего не изменилось. */
+function metricsWithoutData() {
+  const out = [];
+  const vis = series.filter(s => s.visible && s.points && s.points.length);
+  if (!vis.length) return out;
+  activeMetricsOrdered().forEach(m => {
+    const f = metricField(m);
+    const has = vis.some(s => s.points.some(p => {
+      const v = p[f];
+      return v !== null && v !== undefined && isFinite(v);
+    }));
+    if (!has) out.push(m);
+  });
+  return out;
+}
+
 function multiUpdateMetricLegend() {
   const el = document.getElementById('multi-metric-legend');
   if (!el) return;
   const active = activeMetricsOrdered();
-  if (active.length <= 1) { el.textContent = ''; return; }
+  const missing = metricsWithoutData();
+  /* Сообщение показывается и когда включена ОДНА величина: «влажность» без
+     единственной точки — такой же немой экран, как и три вместе. */
+  const note = missing.length
+    ? `<span style="color:var(--warn)">нет данных: ${missing.map(metricName).join(', ')} — в показанных рядах этих величин нет</span>`
+    : '';
+  if (active.length <= 1) { el.innerHTML = note; return; }
   /* #RADEX-129: цветной кружок перед каждым пунктом — та же палитра, что и
      сами линии (metricMergeColor), чтобы подпись объясняла ОБА признака
      (начертание + цвет), а не только начертание, как раньше. innerHTML вместо
@@ -2133,6 +2160,10 @@ function multiUpdateMetricLegend() {
            `<span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block"></span>` +
            `${dash} — ${metricName(m)} (${metricUnit(m)})</span>`;
   }).join(' · ');
+  /* #RADEX-260: предупреждение ДОПИСЫВАЕТСЯ к легенде, а не заменяет её —
+     первая версия правки складывала его в ту же строку, которую легенда затем
+     перезаписывала целиком, и на плате оно не показалось ни разу. */
+  if (note) el.innerHTML += '<br>' + note;
 }
 
 function multiAddSeries(name, csvText) {
@@ -2579,13 +2610,36 @@ function multiRedraw() {
         }
       }
 
+      /* #RADEX-261, оператор: «на вкладке график не выведен сходящийся
+         доверительный интервал. просто погрешность среднего». Полоса строится
+         той же confidenceBand(), что и на «Показаниях»: для КАЖДОЙ точки берётся
+         UV(t) по её длительности от начала теста, поэтому интервал сужается со
+         временем — ради этого автор методики его и просил (#RADEX-225).
+         Ряд — ровно тот, про который плата посчитала заключение (не слитые точки
+         всех видимых рядов: у них разные начала, и общая полоса ничего бы не
+         значила). Точка отсчёта — `from` из ОТВЕТА платы: именно от неё она
+         считала days, и брать другую значит разойтись с её же числами. */
+      let confBandMulti = [];
+      const bandSrc = assessViewSource();
+      if (bandSrc && methodTables && assessViewData
+          && assessViewData.verdict !== 'too_short' && isFinite(assessViewData.u_d_eff)) {
+        const bandSeries = series.find(s => s.name === bandSrc.seriesName);
+        const bandStart = (isFinite(assessViewData.from) && assessViewData.from > 0)
+          ? assessViewData.from : bandSrc.start;
+        if (bandSeries && bandSeries.points.length) {
+          confBandMulti = confidenceBand(bandSeries.points, bandStart,
+            assessViewData.u_d_eff, !!assessViewData.restricted, methodTables);
+        }
+      }
+
       multiDrawOverlays(multiCtx, overlayPts,
         {leftMargin: PADL, rightMargin: PADR, topMargin: PADT, bottomMargin: PADB,
          width: width, height: height,
          minVal: radonRange[0], maxVal: radonRange[1],
+         minTime: minTime, maxTime: maxTime,
          scale: plotH / (radonRange[1] - radonRange[0] || 1)},
         {limit: C.limit, mean: C.mean, band: C.line, axis: C.axis},
-        {normative: norm, uInst: uInst, avoidBox: meanBadgeBox});
+        {normative: norm, uInst: uInst, avoidBox: meanBadgeBox, confBand: confBandMulti});
     }
   }
 
@@ -2616,6 +2670,11 @@ function multiRedraw() {
     multiChartSnapshot = null;
   }
 
+  /* #RADEX-260: состав рядов меняется галочками в панели «Замеры», а не только
+     кнопками величин, — значит предупреждение «нет данных» обязано
+     пересчитываться на каждой перерисовке. Рекурсии нет: легенда графика не
+     перерисовывает. */
+  if (typeof multiUpdateMetricLegend === 'function') multiUpdateMetricLegend();
 }
 
 function multiUpdateLegend() {
@@ -3169,23 +3228,50 @@ function multiDrawOverlays(ctx, points, geom, colors, opts) {
     : Math.sqrt(uStat * uStat + uInst * uInst);
   const halfWidth = mean * U;
 
-  // Рисуем полосу погрешности
   ctx.globalAlpha = 0.12;
   ctx.fillStyle = colors.band;
   const xStart = leftMargin;
   const xEnd = plotRight;
   const yMean = height - bottomMargin - (mean - minVal) * scale;
-  const yUpper = height - bottomMargin - (mean + halfWidth - minVal) * scale;
-  const yLower = height - bottomMargin - (mean - halfWidth - minVal) * scale;
+  const yAt = v => height - bottomMargin - (v - minVal) * scale;
 
-  ctx.beginPath();
-  ctx.moveTo(xStart, yUpper);
-  ctx.lineTo(xEnd, yUpper);
-  ctx.lineTo(xEnd, yLower);
-  ctx.lineTo(xStart, yLower);
-  ctx.closePath();
-  ctx.fill();
-  ctx.globalAlpha = 1;
+  /* #RADEX-261: если плата дала числа методики — полоса СУЖАЕТСЯ: у каждой точки
+     своя UV(t) по длительности от начала теста. Прямоугольник постоянной высоты
+     показывал одну и ту же погрешность в первый день теста и на 341-е сутки, то
+     есть ровно то, чего интервал показывать не должен. Запасной прямоугольник
+     остаётся на случай, когда таблиц/ответа платы ещё нет. */
+  const cb = opts.confBand;
+  if (cb && cb.length > 1 && isFinite(geom.minTime) && isFinite(geom.maxTime)) {
+    const plotW = width - leftMargin - rightMargin;
+    const xAtT = t => leftMargin + plotW * (t - geom.minTime) / ((geom.maxTime - geom.minTime) || 1);
+    ctx.beginPath();
+    ctx.moveTo(xAtT(cb[0].t), yAt(cb[0].upper));
+    for (const b of cb) ctx.lineTo(xAtT(b.t), yAt(b.upper));
+    for (let k = cb.length - 1; k >= 0; k--) ctx.lineTo(xAtT(cb[k].t), yAt(cb[k].lower));
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    /* Верхняя граница отдельной линией: именно её пересечение с нормативом и
+       есть момент, когда помещение можно признать соответствующим. */
+    ctx.strokeStyle = colors.band;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xAtT(cb[0].t), yAt(cb[0].upper));
+    for (const b of cb) ctx.lineTo(xAtT(b.t), yAt(b.upper));
+    ctx.stroke();
+    ctx.setLineDash([]);
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(xStart, yAt(mean + halfWidth));
+    ctx.lineTo(xEnd, yAt(mean + halfWidth));
+    ctx.lineTo(xEnd, yAt(mean - halfWidth));
+    ctx.lineTo(xStart, yAt(mean - halfWidth));
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 
   /* Средняя — штриховая и своим цветом: сплошная линия того же начертания, что
      и данные, читается как второй ряд измерений, хотя это расчётная величина.
@@ -4015,10 +4101,20 @@ function verdictFacts(a) {
   const lastPt = pts.length ? pts[pts.length - 1].t : 0;
   const to = a.to || lastPt || Math.floor(Date.now() / 1000);
   if (from > 0) {
-    const d = new Date(from * 1000);
-    rows.push('Начало теста: ' + d.toLocaleDateString('ru-RU') + ' ' +
-      d.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'}));
-    if (to > from) rows.push('Продолжительность теста: ' + formatSpanMDH(to - from));
+    const fmt = ts => {
+      const d = new Date(ts * 1000);
+      return d.toLocaleDateString('ru-RU') + ' ' +
+        d.toLocaleTimeString('ru-RU', {hour: '2-digit', minute: '2-digit'});
+    };
+    rows.push('Начало теста: ' + fmt(from));
+    /* #RADEX-262: конец теста конкретной датой и продолжительность в СУТКАХ —
+       по ним человек находит строку в таблице UV(t)/Kp(t); «мес/сут/ч» остаётся
+       рядом как привычная форма. */
+    if (to > from) {
+      rows.push('Последняя запись: ' + fmt(to));
+      const days = (isFinite(a.days) && a.days > 0) ? a.days : Math.floor((to - from) / 86400);
+      rows.push('Продолжительность теста: ' + days + ' сут (' + formatSpanMDH(to - from) + ')');
+    }
   }
   if (a.c > 0) rows.push('Средняя ОА радона: ' + Math.round(a.c) + ' Бк/м³');
   if (udDiffers(a)) {
@@ -4134,16 +4230,20 @@ function applyAssess(a, source) {
 let assessViewTimer = null;
 let assessViewKey = '';
 
+/* #RADEX-261: возвращается ещё и seriesName — по нему график находит ТОТ САМЫЙ
+   ряд, про который плата посчитала заключение, и строит вокруг него сходящийся
+   доверительный интервал. Без имени ряда полосу пришлось бы строить по слитым
+   точкам всех видимых рядов, у которых разные начала теста. */
 function assessViewSource() {
   for (const row of testsPanelRows()) {
     const s = series.find(x => x.name === row.seriesName);
     if (s && s.visible === true && row.start > 0) {
-      return { start: row.start, name: row.title };
+      return { start: row.start, name: row.title, seriesName: row.seriesName };
     }
   }
   const boardRow = testsPanelRows().find(r => r.key === 'board');
   if (boardRow && series.find(x => x.name === boardRow.seriesName)?.visible === true) {
-    return { start: 0, name: 'история платы' };
+    return { start: 0, name: 'история платы', seriesName: boardRow.seriesName };
   }
   return null;
 }
@@ -4327,19 +4427,29 @@ function renderArchAssess(a, sourceText) {
   html += '<div class="sub">';
   html += `<div>Источник данных: ${sourceText}</div>`;
 
+  /* #RADEX-262, оператор: «надо конкретно даты и сколько дней». Вместо «по
+     последнюю запись» — сама дата: `to=0` означает у платы «до конца файла», и
+     конец берётся у ряда, который она же и считала. Продолжительность теперь
+     печатается ВСЕГДА и первым числом даёт СУТКИ — именно они, а не «мес/сут/ч»,
+     идут в таблицу UV(t)/Kp(t), и по ним человек сверяет расчёт. */
   if (a.from > 0) {
-    const from = new Date(a.from * 1000).toLocaleString('ru-RU');
-    let to;
-    if (a.to === 0) {
-      to = 'по последнюю запись';
-    } else {
-      to = new Date(a.to * 1000).toLocaleString('ru-RU');
+    let toTs = a.to;
+    if (!toTs) {
+      const src = (typeof assessViewSource === 'function') ? assessViewSource() : null;
+      const s = src ? series.find(x => x.name === src.seriesName) : null;
+      const last = (s && s.points.length) ? s.points[s.points.length - 1].t : 0;
+      if (last > a.from) toTs = last;
     }
+    const from = new Date(a.from * 1000).toLocaleString('ru-RU');
+    const to = toTs ? new Date(toTs * 1000).toLocaleString('ru-RU') : 'по последнюю запись';
     html += `<div>Период: ${from} — ${to}</div>`;
-  }
 
-  if (a.from > 0 && a.to > 0) {
-    html += `<div>Продолжительность: ${formatSpanMDH((a.to || 0) - a.from)}</div>`;
+    const days = isFinite(a.days) && a.days > 0
+      ? a.days : (toTs > a.from ? Math.floor((toTs - a.from) / 86400) : 0);
+    if (days > 0) {
+      const span = toTs > a.from ? formatSpanMDH(toTs - a.from) : '';
+      html += `<div>Продолжительность: ${days} сут${span ? ' (' + span + ')' : ''}</div>`;
+    }
   }
 
   if (isFinite(a.c) && a.c > 0) {

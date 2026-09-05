@@ -809,6 +809,30 @@
         <div id="multi-metric-legend" class="sub" style="margin-top:4px;font-size:var(--fs-xs)"></div>
         <div class="sub" id="multi-hint" style="margin-top:6px;font-size:var(--fs-xs)">Колесо мыши — масштаб по времени, перетаскивание — сдвиг, двойное нажатие — сброс, значок ⛶ — во весь экран.</div>
       </div>
+      <!-- #RADEX-236, оператор: «поле оценки под графиком размести». Заключение
+           относится к тому, что нарисовано выше, — между ними не должно быть ни
+           списка замеров, ни загрузки файлов: человек нажимает «Оценить» и ищет
+           ответ глазами там же, где смотрел кривую. -->
+      <!-- #RADEX-227, оператор: «оценку по архивным записям перенеси на вкладку
+           графики. Эта оценка будет выводиться по выбранным файлам и не будет
+           связана с текущим замером». Раньше блок стоял на «Соответствии» и
+           ПОДМЕНЯЛ карточку заключения текущего замера (assessOverride) — то
+           есть ровно то, чего оператор не хочет. Здесь у него собственный
+           вывод, карточка текущего замера не трогается вовсе. -->
+      <div class="card assess-arch">
+        <div class="card-title">Оценка соответствия по ранее измеренным (архивным) данным</div>
+        <div class="sub" style="font-size:var(--fs-xs);margin-bottom:8px">кнопка «Оценить» у замера в списке выше — заключение по этому файлу; ниже — по произвольному интервалу общей истории платы</div>
+        <div class="chart-controls" style="margin-bottom:8px">
+          <!-- #RADEX-134: видимый текстовый label, а не только aria-label —
+               пустой type="date" на iOS Safari рисуется пустым прямоугольником. -->
+          <label class="sub" for="assess-from" style="display:flex;align-items:center;gap:4px">с</label>
+          <input type="date" id="assess-from" class="range-date" aria-label="начало интервала оценки">
+          <label class="sub" for="assess-to" style="display:flex;align-items:center;gap:4px">по</label>
+          <input type="date" id="assess-to" class="range-date" aria-label="конец интервала оценки">
+          <button id="assess-apply">Оценка по заданному интервалу</button>
+        </div>
+        <div id="assess-arch-out" class="assess-arch-out sub">интервал или замер не выбран</div>
+      </div>
       <!-- #RADEX-233, оператор: «вообще пересмотри вкладку. тут бардак».
            Таблица рядов стояла ГОЛОЙ между карточками — единственный блок
            вкладки без заголовка и без карточки, да ещё и оторванный от графика,
@@ -830,35 +854,18 @@
              (в отличие от /api/history/import, который историю заменяет). -->
         <div class="form-group" style="margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--line);margin-bottom:0">
           <label for="import-file">Загрузить выгрузку прибора (CSV) как отдельный замер</label>
-          <input type="file" id="import-file" accept=".csv,text/csv">
-          <div class="btn-row" style="margin-top:8px">
+          <!-- #RADEX-236, оператор: «в одну линию». Выбор файла, имя и кнопка —
+               один шаг, а стояли двумя ярусами. -->
+          <div class="test-controls">
+            <input type="file" id="import-file" accept=".csv,text/csv">
             <input type="text" id="import-label" maxlength="24" placeholder="имя замера, например kvartira-2"
                    aria-label="имя импортируемого замера">
             <button type="button" id="btn-import-test">Импортировать</button>
           </div>
           <div class="sub" id="import-note" style="font-size:var(--fs-xs);margin-top:6px">
-            файл готовит <code>scripts/radexdc_csv_to_history.py</code> из выгрузки RadexDC; текущие измерения не затрагиваются</div>
+            принимается и выгрузка прибора как есть (<code>date,Radon</code>), и наш формат
+            (<code>time,radon,…</code>); текущие измерения не затрагиваются</div>
         </div>
-      </div>
-      <!-- #RADEX-227, оператор: «оценку по архивным записям перенеси на вкладку
-           графики. Эта оценка будет выводиться по выбранным файлам и не будет
-           связана с текущим замером». Раньше блок стоял на «Соответствии» и
-           ПОДМЕНЯЛ карточку заключения текущего замера (assessOverride) — то
-           есть ровно то, чего оператор не хочет. Здесь у него собственный
-           вывод, карточка текущего замера не трогается вовсе. -->
-      <div class="card assess-arch">
-        <div class="card-title">Оценка соответствия по ранее измеренным (архивным) данным</div>
-        <div class="sub" style="font-size:var(--fs-xs);margin-bottom:8px">кнопка «Оценить» у замера в списке выше — заключение по этому файлу; ниже — по произвольному интервалу общей истории платы</div>
-        <div class="chart-controls" style="margin-bottom:8px">
-          <!-- #RADEX-134: видимый текстовый label, а не только aria-label —
-               пустой type="date" на iOS Safari рисуется пустым прямоугольником. -->
-          <label class="sub" for="assess-from" style="display:flex;align-items:center;gap:4px">с</label>
-          <input type="date" id="assess-from" class="range-date" aria-label="начало интервала оценки">
-          <label class="sub" for="assess-to" style="display:flex;align-items:center;gap:4px">по</label>
-          <input type="date" id="assess-to" class="range-date" aria-label="конец интервала оценки">
-          <button id="assess-apply">Оценка по заданному интервалу</button>
-        </div>
-        <div id="assess-arch-out" class="assess-arch-out sub">интервал или замер не выбран</div>
       </div>
       <!-- #RADEX-223, оператор: «заголовок сохраненные замеры не на месте».
            Перенесённая сюда таблица средних (#RADEX-220) была вставлена МЕЖДУ

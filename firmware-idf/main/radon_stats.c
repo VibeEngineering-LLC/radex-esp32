@@ -1651,6 +1651,73 @@ bool radon_csv_parse(const char *line, radon_row_t *out)
     return true;
 }
 
+
+/* #RADEX-236, оператор: «плата должна поддерживать импорт файлов радекса csv».
+   Разбор строки выгрузки ПРИБОРА: «"2025-08-05 00:55:05","547",». Отдельная
+   функция, а не ветка внутри radon_csv_parse: у нашего формата первое поле —
+   epoch, у прибора — дата, и общий «умный» разборщик рано или поздно принял
+   бы одно за другое молча. Прибор пишет МЕСТНОЕ время, mktime трактует поля
+   как местные — метка совпадает с тем, что человек видел на экране прибора. */
+static bool radex_csv_parse(const char *line, radon_row_t *out) {
+    if (line == NULL || out == NULL) {
+        return false;
+    }
+
+    memset(out, 0, sizeof(radon_row_t));
+    out->ts = 0;
+    out->radon = NAN;
+    out->radon_avg = NAN;
+    out->temp = NAN;
+    out->hum = NAN;
+    out->w = 1;
+
+    int year, mon, day, hour, min, sec;
+    float radon;
+    int matched;
+
+    // Попытка разбора с кавычками
+    matched = sscanf(line, "\"%d-%d-%d %d:%d:%d\",\"%f\"", &year, &mon, &day, &hour, &min, &sec, &radon);
+    if (matched != 7) {
+        // Попытка разбора без кавычек
+        matched = sscanf(line, "%d-%d-%d %d:%d:%d,%f", &year, &mon, &day, &hour, &min, &sec, &radon);
+        if (matched != 7) {
+            return false;
+        }
+    }
+
+    // Проверка диапазонов
+    if (year < 2000 || year > 2100 ||
+        mon < 1 || mon > 12 ||
+        day < 1 || day > 31 ||
+        hour < 0 || hour > 23 ||
+        min < 0 || min > 59 ||
+        sec < 0 || sec > 59 ||
+        radon < 0) {
+        return false;
+    }
+
+    struct tm tmv;
+    memset(&tmv, 0, sizeof(tmv));
+    tmv.tm_year = year - 1900;
+    tmv.tm_mon = mon - 1;
+    tmv.tm_mday = day;
+    tmv.tm_hour = hour;
+    tmv.tm_min = min;
+    tmv.tm_sec = sec;
+    tmv.tm_isdst = -1;
+
+    time_t t = mktime(&tmv);
+    if (t <= 0) {
+        return false;
+    }
+
+    out->ts = t;
+    out->radon = radon;
+    out->radon_avg = radon;
+
+    return true;
+}
+
 bool radon_stats_import_begin(void)
 {
     if (!mounted) return false;
@@ -1671,7 +1738,12 @@ bool radon_stats_import_line(const char *line)
     if (line == NULL || line[0] == '\0' || line[0] == '#') return true;
 
     radon_row_t row;
-    if (!radon_csv_parse(line, &row)) return true; // Не разобрали — не считаем
+    /* #RADEX-236: сначала НАШ формат, затем формат прибора. Порядок важен:
+       у нашего первое поле — epoch (число), у прибора — дата в кавычках, и
+       перепутать их разборщики не могут. Строка, не разобранная ни тем, ни
+       другим (заголовок файла, пустая, мусор), пропускается молча — как и
+       раньше: импорт не обязан спотыкаться о шапку выгрузки. */
+    if (!radon_csv_parse(line, &row) && !radex_csv_parse(line, &row)) return true;
 
     /* Метка либо реальная (эпоха после 2023), либо относительная отрицательная
        (#RADEX-113, часы ещё не синхронизированы). Диапазон между ними — мусор:

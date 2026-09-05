@@ -820,26 +820,13 @@
            ПОДМЕНЯЛ карточку заключения текущего замера (assessOverride) — то
            есть ровно то, чего оператор не хочет. Здесь у него собственный
            вывод, карточка текущего замера не трогается вовсе. -->
+      <!-- #RADEX-242, оператор 05.09: «оценка работает онлайн в зависимости от
+           периода отображаемого на графике». Поля «с»/«по», выбор источника и
+           кнопка удалены: интервал — это то, что человек и так видит на экране,
+           а вводить его вторично значит держать две несогласуемые истины. -->
       <div class="card assess-arch">
-        <div class="card-title">Оценка соответствия по ранее измеренным (архивным) данным</div>
-        <div class="sub" style="font-size:var(--fs-xs);margin-bottom:8px">кнопка «Оценить» у замера в списке ниже — заключение по всему файлу; здесь — по части этого замера либо истории платы</div>
-        <div class="chart-controls" style="margin-bottom:8px">
-          <!-- #RADEX-238: выбор источника. Без него поля «с»/«по» считали ТОЛЬКО
-               по общей истории платы: интервал внутри архивного замера давал
-               пустой ответ (too_short, c=0) — оператор смотрел на годовую кривую
-               и задавал по ней даты, а плата отвечала по своим сорока записям. -->
-          <select id="assess-src" class="range-date" aria-label="источник данных для оценки">
-            <option value="0">история платы</option>
-          </select>
-          <!-- #RADEX-134: видимый текстовый label, а не только aria-label —
-               пустой type="date" на iOS Safari рисуется пустым прямоугольником. -->
-          <label class="sub" for="assess-from" style="display:flex;align-items:center;gap:4px">с</label>
-          <input type="date" id="assess-from" class="range-date" aria-label="начало интервала оценки">
-          <label class="sub" for="assess-to" style="display:flex;align-items:center;gap:4px">по</label>
-          <input type="date" id="assess-to" class="range-date" aria-label="конец интервала оценки">
-          <button id="assess-apply">Оценка по заданному интервалу</button>
-        </div>
-        <div id="assess-arch-out" class="assess-arch-out sub">интервал или замер не выбран</div>
+        <div class="card-title">Заключение по показанному периоду</div>
+        <div id="assess-arch-out" class="assess-arch-out sub">отметьте файл галочкой — заключение считается по периоду, показанному на графике</div>
       </div>
       <table id="multi-stats" hidden></table>
       <!-- #RADEX-102: список замеров с флеш — каждый читается через свой файл
@@ -871,51 +858,6 @@
             принимается и выгрузка прибора как есть (<code>date,Radon</code>), и наш формат
             (<code>time,radon,…</code>); текущие измерения не затрагиваются</div>
         </div>
-      </div>
-      <!-- #RADEX-223, оператор: «заголовок сохраненные замеры не на месте».
-           Перенесённая сюда таблица средних (#RADEX-220) была вставлена МЕЖДУ
-           карточкой «Сохранённые замеры» и статистикой рядов #multi-stats,
-           разорвав пару «список рядов → их статистика», да ещё заголовок жил в
-           своей карточке, а таблица лежала снаружи. Теперь блок стоит последним
-           и заголовок с таблицей — в одной карточке. -->
-      <div class="card periods-card">
-        <div class="card-title">Средняя ОА радона за периоды</div>
-        <table id="averages">
-        <thead>
-          <tr>
-            <th>Период</th>
-            <th>Среднее</th>
-            <th>Покрытие</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Сутки</td>
-            <td class="row-value" id="avg-d1">—</td>
-            <td class="row-coverage" id="cov-d1">—</td>
-          </tr>
-          <tr>
-            <td>7 дней</td>
-            <td class="row-value" id="avg-d7">—</td>
-            <td class="row-coverage" id="cov-d7">—</td>
-          </tr>
-          <tr>
-            <td>30 дней</td>
-            <td class="row-value" id="avg-d30">—</td>
-            <td class="row-coverage" id="cov-d30">—</td>
-          </tr>
-          <tr>
-            <td>Год</td>
-            <td class="row-value" id="avg-d365">—</td>
-            <td class="row-coverage" id="cov-d365">—</td>
-          </tr>
-          <tr>
-            <td>Всё время</td>
-            <td class="row-value" id="avg-all">—</td>
-            <td class="row-coverage" id="cov-all">—</td>
-          </tr>
-        </tbody>
-        </table>
       </div>
     </div>
     <!-- Сканер -->
@@ -1329,8 +1271,13 @@
     }
   }
 
-  // Обновление средних значений
+  /* #RADEX-239, оператор 05.09: таблица «Средняя ОА радона за периоды» убрана с
+     «Графиков» — средние за сутки/7/30 дней видны на самом графике, а в
+     заключении используются не они. Ячеек больше нет, поэтому цикл обязан
+     молча выходить: без этой проверки getElementById вернул бы null и
+     обновление ВСЕХ показаний падало бы на первой же строке. */
   const periods = ['d1', 'd7', 'd30', 'd365', 'all'];
+  if (!document.getElementById('avg-d1')) return;
   periods.forEach(period => {
     const periodData = stats.periods[period];
     if (periodData && periodData.valid) {
@@ -2597,6 +2544,13 @@ function multiRedraw() {
   } catch (e) {
     multiChartSnapshot = null;
   }
+
+  /* #RADEX-242: окно графика изменилось — заключение обязано догнать его.
+     Отложенно (400 мс после остановки): multiRedraw() зовётся на каждое
+     событие колеса и на каждый пиксель перетаскивания, и запрос на каждое из
+     них завалил бы плату. Ключ запроса внутри отсекает повтор с теми же
+     границами — перерисовка без смены окна плату не трогает вовсе. */
+  if (typeof assessFromViewSoon === 'function') assessFromViewSoon();
 }
 
 function multiUpdateLegend() {
@@ -2686,21 +2640,6 @@ function testsFormatSpan(sec) {
    панелью замеров, поэтому импортированный файл появляется здесь сам. Выбор
    человека переживает пересборку: иначе автообновление списка сбрасывало бы
    его на «историю платы» ровно между выбором дат и нажатием кнопки. */
-function assessSrcRefresh() {
-  const sel = document.getElementById('assess-src');
-  if (!sel) return;
-  const prev = sel.value;
-  let html = '<option value="0">история платы</option>';
-  testsCache.slice().sort((x, y) => y.start - x.start).forEach(t => {
-    const when = new Date(t.start * 1000).toLocaleString('ru-RU');
-    /* Имя приходит с платы отфильтрованным по белому списку A-Za-z0-9-_
-       (radon_label_sanitize), другого пользовательского текста здесь нет. */
-    html += '<option value="' + t.start + '">' + (t.label || 'замер') + ' · ' + when + '</option>';
-  });
-  sel.innerHTML = html;
-  sel.value = prev && sel.querySelector('option[value="' + prev + '"]') ? prev : '0';
-}
-
 async function multiLoadTestsList() {
   /* #RADEX-237: список замеров теперь кормит панель, а не строит свою разметку.
      Имя ИДУЩЕГО замера по-прежнему подставляется в поле на «Заключении»
@@ -2719,7 +2658,6 @@ async function multiLoadTestsList() {
     return;
   }
   renderTestsPanel();
-  assessSrcRefresh();
 }
 
 function multiBind() {
@@ -3981,81 +3919,69 @@ function applyAssess(a, source) {
   }
 }
 
-/* #RADEX-238: разбор решения по методу — какой критерий сработал и на
-   каких числах. Ничего не пересчитывает: uv/kp/crit1/crit2/days уже
-   посчитаны платой, здесь они только раскладываются в проверку. */
-function assessMethodHtml(a) {
-  if (!a || a.verdict === 'too_short' || !(a.c > 0)) return '';
+/* #RADEX-242: заключение считается по ОКНУ ГРАФИКА. Человек крутит колесо —
+   через 400 мс после остановки плата пересчитывает заключение для нового
+   интервала выбранного файла. Полей ввода дат больше нет: интервал — это
+   то, что видно на экране, вторая его копия рассогласуется с первой. */
+let assessViewTimer = null;
+let assessViewKey = '';
 
-  const { c, uv, kp, crit1, crit2, days, c_rl, u_d_eff, restricted } = a;
-
-  const formatNum = (x, digits) => Number.isFinite(x) ? Number(x).toFixed(digits) : '—';
-  const fmt1 = formatNum(c, 1);
-  const fmt2 = formatNum(uv, 2);
-  const fmt3 = formatNum(u_d_eff, 2);
-  const fmt4 = formatNum(crit1, 1);
-  const fmt5 = formatNum(c_rl, 1);
-
-  const html = [];
-
-  // Строка величин
-  html.push('<div class="mc-vals">');
-  html.push(`<span class="mc-chip">режим = ${restricted ? 'ограниченный' : 'нормальный'}</span>`);
-  html.push(`<span class="mc-chip">U_V(t) = ${fmt2}</span>`);
-  if (kp > 0) html.push(`<span class="mc-chip">K_p(t) = ${formatNum(kp, 2)}</span>`);
-  html.push(`<span class="mc-chip">t = ${days} сут.</span>`);
-  html.push('</div>');
-
-  // Критерий (1)
-  const sign1 = crit1 < c_rl ? '&lt;' : '≥';
-  const result1 = crit1 < c_rl ? '<b>выполнен</b>' : '<b>не выполнен</b>';
-  html.push('<div class="mc-rule">Критерий (1) — «соответствует», §4.2.1: C(t)·[1 + √(U_V² + U_И²)] &lt; C_ну</div>');
-  html.push(`<div class="mc-calc">${fmt1} · [1 + √(${fmt2}² + ${fmt3}²)] = ${fmt4} ${sign1} ${fmt5} Бк/м³ → ${result1}</div>`);
-
-  // Критерий (2)
-  if (kp > 0 && !restricted) {
-    const sign2 = crit2 > c_rl ? '&gt;' : '≤';
-    const result2 = crit2 > c_rl ? '<b>выполнен</b>' : '<b>не выполнен</b>';
-    html.push('<div class="mc-rule">Критерий (2) — «не соответствует», §4.2.2: C(t)/K_p(t)·[1 − U_И] &gt; C_ну</div>');
-    html.push(`<div class="mc-calc">${fmt1} / ${formatNum(kp, 2)} · [1 − ${fmt3}] = ${formatNum(crit2, 1)} ${sign2} ${fmt5} Бк/м³ → ${result2}</div>`);
-  } else if (restricted) {
-    html.push('<div class="mc-calc mc-off">критерий (2) в ограниченном режиме не определён</div>');
+function assessViewSource() {
+  for (const row of testsPanelRows()) {
+    const s = series.find(x => x.name === row.seriesName);
+    if (s && s.visible === true && row.start > 0) {
+      return { start: row.start, name: row.title };
+    }
   }
-
-  // Правило 9 месяцев
-  if (crit1 >= c_rl) {
-    const sign3 = days >= 270 ? '≥' : '&lt;';
-    const result3 = days >= 270 ? '<b>выполнен</b>' : '<b>не выполнен</b>';
-    html.push('<div class="mc-rule">Правило 9 месяцев, §7.1.2: критерий (1) не выполнен И t ≥ 9 месяцев</div>');
-    html.push(`<div class="mc-calc">t = ${days} сут. ${sign3} 270 сут. → ${result3}</div>`);
+  const boardRow = testsPanelRows().find(r => r.key === 'board');
+  if (boardRow && series.find(x => x.name === boardRow.seriesName)?.visible === true) {
+    return { start: 0, name: 'история платы' };
   }
+  return null;
+}
 
-  // Итог
-  if (a.verdict === 'ok') {
-    html.push('<div class="mc-total">Итог: критерий (1) выполнен — помещение признаётся соответствующим нормативу (§7.1.1).</div>');
-  } else if (a.verdict === 'exceeds') {
-    /* Прошивка признаёт превышение по ДВУМ разным причинам (radon_stats.c:666:
-       `exceed || days >= 270`), и человеку важно, по какой именно: сработавший
-       критерий (2) — это измеренное превышение, а правило 9 месяцев — исчерпание
-       времени без доказанного соответствия. */
-    const byCrit2 = kp > 0 && !restricted && crit2 > c_rl;
-    html.push('<div class="mc-total">Итог: ' + (byCrit2
-      ? 'критерий (1) не сработал, но сработал критерий (2)'
-      : 'критерий (1) не сработал, а продолжительность достигла 9 месяцев')
-      + ' — помещение признаётся не соответствующим нормативу (§7.1.2).</div>');
-  } else if (a.verdict === 'gray') {
-    html.push('<div class="mc-total">Итог: ни один критерий не сработал — решение не принято, требуется продолжить измерение либо снизить концентрацию (§7.1.3).</div>');
+async function assessFromView() {
+  const out = document.getElementById('assess-arch-out');
+  if (!out) return;
+
+  try {
+    const src = assessViewSource();
+    if (!src) {
+      assessViewKey = '';
+      out.textContent = 'отметьте файл галочкой — заключение считается по периоду, показанному на графике';
+      return;
+    }
+
+    if (!visibleRange) return;
+
+    const from = Math.floor(visibleRange.min);
+    const to = Math.ceil(visibleRange.max);
+
+    if (!isFinite(from) || !isFinite(to) || to <= from) return;
+
+    const key = src.start + ':' + from + ':' + to;
+    if (key === assessViewKey) return;
+    assessViewKey = key;
+
+    const p = new URLSearchParams();
+    if (src.start > 0) p.append('start', src.start);
+    p.append('from', from);
+    p.append('to', to);
+
+    const r = await fetch('/api/assess?' + p, { cache: 'no-store' });
+    if (!r.ok) throw new Error('плата ответила ' + r.status);
+
+    renderArchAssess(await r.json(), src.name + ' · период, показанный на графике');
+  } catch (e) {
+    assessViewKey = '';
+    console.error(e);
+    out.textContent = 'не удалось получить заключение: ' + e.message;
   }
+}
 
-  // Предупреждение о таблице
-  /* Последний узел таблицы — 360 суток (проверено запросом /api/method/tables у
-     платы: normal кончается [360, 0.00, 1.00]). Дальше значения не растут и не
-     убывают — берётся последний узел, и об этом надо сказать вслух. */
-  if (days > 360) {
-    html.push('<div class="mc-note">свыше 360 суток (12 месяцев) — за пределами таблицы: приняты значения последнего узла, U_V = 0.</div>');
-  }
-
-  return `<div class="method-check"><div class="mc-head">Проверка критериев на ваших числах</div>${html.join('')}</div>`;
+function assessFromViewSoon() {
+  clearTimeout(assessViewTimer);
+  assessViewTimer = setTimeout(assessFromView, 400);
 }
 
 function renderArchAssess(a, sourceText) {
@@ -4100,7 +4026,12 @@ function renderArchAssess(a, sourceText) {
     html += `<div>Средняя ОА радона: ${Math.round(a.c)} Бк/м³</div>`;
   }
 
-  if (a.uv > 0 && isFinite(a.u_d_eff)) {
+  /* #RADEX-238: условие было `uv > 0` — и на длинном тесте строка ПРОПАДАЛА.
+     Свыше 360 суток U_V(t) = 0 по таблице (последний узел), то есть временнóй
+     неопределённости уже нет, но инструментальная (U_И = 0,30) никуда не делась:
+     интервал равен ±0,30·c и обязан быть показан. Ровно на годовом замере, где
+     заключение и нужно, оператор видел «Средняя 320» без расчётной величины. */
+  if (a.verdict !== 'too_short' && a.c > 0 && isFinite(a.uv) && a.uv >= 0 && isFinite(a.u_d_eff)) {
     const center = Math.round(a.c);
     const halfWidth = Math.round(a.c * bandHalfWidth(a.uv, a.u_d_eff));
     html += `<div>Расчётная среднегодовая ОА радона: ${center} ± ${halfWidth} Бк/м³</div>`;
@@ -4110,98 +4041,8 @@ function renderArchAssess(a, sourceText) {
     html += `<div>Норматив: ${a.c_rl} Бк/м³</div>`;
   }
 
-  /* #RADEX-238: разбор идёт ВНУТРИ .content, но отдельным блоком от .sub —
-     иначе он встанет соседней колонкой (см. комментарий про флекс выше). */
-  html += '</div>';                 /* .sub */
-  html += assessMethodHtml(a);
-  html += '</div></div>';           /* .content → .assessment-card */
+  html += '</div></div></div>';   /* .sub → .content → .assessment-card */
   out.innerHTML = html;
-}
-
-async function archAssessRange() {
-  const btn = document.getElementById('assess-apply');
-  if (!btn) return;
-
-  btn.classList.add('busy');
-  try {
-    const fromInput = document.getElementById('assess-from');
-    const toInput = document.getElementById('assess-to');
-
-    let from = 0;
-    let to = 0;
-
-    /* #RADEX-238: «2025-08-05» и Date.parse — это ПОЛНОЧЬ UTC, а плата пишет
-       метки по местному времени: интервал уезжал на смещение зоны (в Москве
-       заключение начиналось с 03:00 выбранного дня и заканчивалось в 02:59
-       следующего). Собираем дату покомпонентно — конструктор с числами берёт
-       местную зону. */
-    const localDay = (v, h, m, s) => {
-      const p = v.split('-');
-      return Math.floor(new Date(+p[0], +p[1] - 1, +p[2], h, m, s).getTime() / 1000);
-    };
-
-    if (fromInput.value) from = localDay(fromInput.value, 0, 0, 0);
-    if (toInput.value)   to   = localDay(toInput.value, 23, 59, 59);
-
-    /* #RADEX-238: без start плата считает по общей истории — для архивного
-       замера это давало too_short/c=0 при любых датах. */
-    const srcSel = document.getElementById('assess-src');
-    const start = srcSel ? (parseInt(srcSel.value, 10) || 0) : 0;
-
-    const params = new URLSearchParams();
-    if (start > 0) params.append('start', start);
-    if (from > 0) params.append('from', from);
-    if (to > 0) params.append('to', to);
-
-    const response = await fetch('/api/assess?' + params, { cache: 'no-store' });
-    if (!response.ok) {
-      throw new Error('плата ответила ' + response.status);
-    }
-
-    const data = await response.json();
-    /* #RADEX-238: в заключении обязано быть видно, ПО ЧЕМУ оно посчитано —
-       два источника с одинаковыми датами дают разные числа. */
-    const srcName = (srcSel && srcSel.selectedIndex >= 0)
-      ? srcSel.options[srcSel.selectedIndex].textContent : 'история платы';
-    let label = srcName + ', интервал';
-    if (from === 0 && to === 0) {
-      label += ' начало истории — настоящее время';
-    } else if (from === 0) {
-      label += ' начало истории — ' + new Date(to * 1000).toLocaleString('ru-RU');
-    } else if (to === 0) {
-      label += ' ' + new Date(from * 1000).toLocaleString('ru-RU') + ' — по последнюю запись';
-    } else {
-      label += ' ' + new Date(from * 1000).toLocaleString('ru-RU') + ' — ' + new Date(to * 1000).toLocaleString('ru-RU');
-    }
-
-    renderArchAssess(data, label);
-  } catch (e) {
-    console.error(e);
-    const out = document.getElementById('assess-arch-out');
-    if (out) {
-      out.innerHTML = 'не удалось получить оценку: ' + e.message;
-    }
-  } finally {
-    btn.classList.remove('busy');
-  }
-}
-
-async function archAssessTest(start, when, label) {
-  try {
-    const response = await fetch('/api/assess?start=' + start, { cache: 'no-store' });
-    if (!response.ok) {
-      throw new Error('плата ответила ' + response.status);
-    }
-
-    const data = await response.json();
-    renderArchAssess(data, 'замер ' + when + (label ? ' («' + label + '»)' : ''));
-  } catch (e) {
-    console.error(e);
-    const out = document.getElementById('assess-arch-out');
-    if (out) {
-      out.innerHTML = 'не удалось получить оценку: ' + e.message;
-    }
-  }
 }
 
 function bindTestLabel() {
@@ -4444,10 +4285,10 @@ function renderTestsPanel() {
       statHtml = `<div class="tp-stat">не загружен</div>`;
     }
 
+    /* #RADEX-242: кнопки «Оценить» больше нет — заключение считается само по
+       окну графика для отмеченного файла. Осталось то, что назвал оператор:
+       галочка показа и удаление файла. */
     let actionsHtml = '';
-    if (row.key !== 'board') {
-      actionsHtml += '<button class="btn" onclick="archAssessTest(' + row.start + ', \'' + row.when + '\', \'' + (row.title === 'замер' ? '' : row.title) + '\')">Оценить</button>';
-    }
     if (row.deletable) {
       actionsHtml += '<button class="btn btn-danger" onclick="testsPanelDelete(' + row.start + ', \'' + row.seriesName + '\')">Удалить</button>';
     }
@@ -4532,8 +4373,8 @@ async function testsPanelDelete(start, seriesName) {
 }
 
 function bindAssessControls() {
-  const applyBtn = document.getElementById('assess-apply');
-  if (applyBtn) applyBtn.addEventListener('click', archAssessRange);
+  /* #RADEX-242: кнопки «Оценка по заданному интервалу» больше нет —
+     заключение пересчитывается само после каждого изменения окна графика. */
   bindTestLabel();
   bindTestImport();   /* #RADEX-224 */
 }

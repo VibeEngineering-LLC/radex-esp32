@@ -5,6 +5,32 @@ import os
 import argparse
 import re
 
+
+# W-067 (05.09.2026): гейт вложенности вкладок. Лишний </div> внутри вкладки
+# закрывает её раньше времени, и следующие блоки вываливаются наружу — видны на
+# КАЖДОЙ вкладке. node --check этого не ловит (JS цел), подсчёт «<div равно
+# </div>» тоже (баланс сходится). Ловит только проверка, что сегмент каждой
+# вкладки закрывается ПОСЛЕДНИМ своим </div>: всё после нулевой глубины —
+# вывалившееся наружу.
+def check_tab_nesting(html):
+    body = re.sub(r'<!--.*?-->', '', html, flags=re.S)
+    body = body[:body.find('<script>')] if '<script>' in body else body
+    marks = [(m.start(), m.group(1)) for m in re.finditer(r'<div id="([a-z]+-content)" class="tab-content"', body)]
+    bad = []
+    for n, (start, tab_id) in enumerate(marks):
+        end = marks[n + 1][0] if n + 1 < len(marks) else len(body)
+        seg, depth = body[start:end], 0
+        for m in re.finditer(r'<div\b|</div>', seg):
+            depth += 1 if m.group(0) == '<div' else -1
+            if depth == 0:
+                # Нарушение — ОТКРЫВАЮЩИЙ тег после закрытия вкладки: это блок,
+                # вывалившийся наружу. Одни закрывающие теги в хвосте — норма
+                # для последней вкладки: за ней закрываются внешние обёртки.
+                if re.search(r'<div\b', seg[m.end():]):
+                    bad.append(tab_id)
+                break
+    return bad
+
 sys.stdout.reconfigure(encoding='utf-8')
 
 # Порядок подключения стилей задан списком в коде, НЕ сортировкой каталога:
@@ -84,6 +110,10 @@ def main():
         # Записываем результат
         output_path = 'index.html'
         try:
+            broken = check_tab_nesting(result)
+            if broken:
+                print("ОШИБКА: у вкладок %s есть блоки ВНЕ закрывающего </div> — они будут видны на каждой вкладке (W-067)" % ", ".join(broken))
+                sys.exit(1)
             write_file(output_path, result)
         except Exception as e:
             print(f"Ошибка записи index.html: {e}")

@@ -1164,7 +1164,14 @@ static esp_err_t handle_tests_points_body(httpd_req_t *req)
     FILE *chk = tf[0] ? fopen(tf, "r") : NULL;
     if (!chk) return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "замер не найден");
     fclose(chk);
-    size_t cap = 32768;
+    /* P-035 (#RADEX-237): 32 КБ хватало на замеры в несколько десятков точек,
+       но radon_stats_test_points_json отдаёт ДО RADON_TEST_POINTS_MAX = 1000
+       точек, а одна точка в JSON — ~70 байт: годовой импортированный замер
+       (8449 измерений → 1000 прореженных) не влезал, функция возвращала -1,
+       страница получала 500, и галочка «на графике» у такого замера была
+       мёртвой. 96 КБ — с запасом на 1000 точек; буфер берётся из PSRAM
+       (8 МБ свободно), на внутреннюю память не давит. */
+    size_t cap = 98304;
     char *buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
     if (!buf) buf = malloc(cap);
     if (!buf) return httpd_resp_send_500(req);

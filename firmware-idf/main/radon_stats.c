@@ -1819,7 +1819,8 @@ int radon_stats_import_commit(void)
 static const char *labels_file = "/data/labels.csv";
 
 int radon_stats_assess_test_json(char *buf, size_t len, time_t start,
-                                 float c_rl, float u_d, bool restricted)
+                                 float c_rl, float u_d, bool restricted,
+                                 time_t from, time_t to)
 {
     char tf[48];
     radon_stats_test_file(start, tf, sizeof(tf));
@@ -1828,14 +1829,19 @@ int radon_stats_assess_test_json(char *buf, size_t len, time_t start,
     radon_assess_t a;
     memset(&a, 0, sizeof(a));
 
+    /* #RADEX-238: нижняя граница — позднейшая из двух. Замер начался в start, и
+       просить оценку с более ранней даты бессмысленно: таких записей в его файле
+       нет, а days считался бы от чужой отметки и вышел бы завышенным. */
+    time_t lo = (from > start) ? from : start;
+
     if (!radon_stats_lock(RS_LOCK_MS_READ)) {
         a.verdict = RADON_VERDICT_TOO_SHORT;
     } else {
-        radon_stats_assess_src_locked(tf, start, 0, c_rl, u_d, restricted, &a);
+        radon_stats_assess_src_locked(tf, lo, to, c_rl, u_d, restricted, &a);
         radon_stats_unlock();
     }
 
-    return assess_json_fmt(buf, len, &a, u_d, restricted, start, 0);
+    return assess_json_fmt(buf, len, &a, u_d, restricted, lo, to);
 }
 
 static void radon_label_sanitize(const char *in, char *out, size_t out_sz)

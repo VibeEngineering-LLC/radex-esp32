@@ -471,7 +471,11 @@ static esp_err_t handle_assess(httpd_req_t *req)
     int len;
 
     if (start > 0) {
-        len = radon_stats_assess_test_json(buf, sizeof(buf), (time_t)start, (float)crl, ud / 100.0f, restr != 0);
+        /* #RADEX-238: from/to относятся к тому же источнику, что и start. Раньше
+           при start>0 они молча отбрасывались, а поля «с»/«по» на странице
+           считали по общей истории платы — для архивного замера это давало
+           пустой ответ (too_short, c=0), проверено на живой плате. */
+        len = radon_stats_assess_test_json(buf, sizeof(buf), (time_t)start, (float)crl, ud / 100.0f, restr != 0, from, to);
     } else {
         len = radon_stats_assess_json(buf, sizeof(buf), from, to, (float)crl, ud / 100.0f, restr != 0);
     }

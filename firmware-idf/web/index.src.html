@@ -1524,6 +1524,15 @@ function bandHalfWidth(uv, uD) {
   return Math.sqrt(uv * uv + uD * uD);
 }
 
+/* #RADEX-264: первый узел таблицы — минимальная длительность, с которой методика
+   вообще даёт UV(t). Число РАЗНОЕ по режимам (нормальная вентиляция — 4 суток,
+   ограниченная — 2) и берётся из таблиц платы, а не зашивается: иначе подпись
+   разойдётся с расчётом при правке таблиц. */
+function methodMinDays(restricted, tables) {
+  const rows = tables && tables[restricted ? 'restricted' : 'normal'];
+  return (rows && rows.length && isFinite(rows[0][0])) ? rows[0][0] : null;
+}
+
 /* #RADEX-225, замечание автора методики: ход СУЖАЮЩЕГОСЯ доверительного интервала
    среднегодовой оценки. Для каждой точки берётся своя длительность от начала
    теста, по ней — свой UV(t); интервал тем уже, чем дольше идёт тест. Момент,
@@ -1823,8 +1832,16 @@ function drawMeanPlaque(ctx, mean, absError, relErr, count, geom, color, opts) {
      среднегодовое с доверительным интервалом». Подпись передаётся снаружи:
      на «Показаниях» плашка по-прежнему про среднее за показанный период, на
      «Графиках» — про расчётную среднегодовую по методике. */
-  const txt = `${opts.label || 'среднее'} ${Math.round(mean)} ± ${Math.round(absError)} Бк/м³`;
-  const sub = showCount ? `${count} изм. за показанный период` : null;
+  /* #RADEX-264, оператор: «показывает не ту погрешность». Пока методика не даёт
+     UV(t) (тест короче первого узла таблицы), интервала НЕТ — и подставлять
+     вместо него приборные 20 % нельзя: на экране это неотличимо от расчётного
+     по методике. Тогда absError не передаётся вовсе, «±» не рисуется, а в
+     подпись уходит причина (opts.note). */
+  const hasErr = (absError !== null && absError !== undefined && isFinite(absError));
+  const txt = hasErr
+    ? `${opts.label || 'среднее'} ${Math.round(mean)} ± ${Math.round(absError)} Бк/м³`
+    : `${opts.label || 'среднее'} ${Math.round(mean)} Бк/м³`;
+  const sub = opts.note || (showCount ? `${count} изм. за показанный период` : null);
   ctx.font = 'bold 13px sans-serif';
   const w = Math.max(ctx.measureText(txt).width, sub ? ctx.measureText(sub).width : 0) + 16;
   const h = sub ? 40 : 24;
@@ -2599,12 +2616,16 @@ function multiRedraw() {
              соответствии отношения не имеет — методика оперирует √(UV(t)²+U_И²),
              и ровно эта величина стоит в заключении под графиком. Пока плата не
              ответила (первая отрисовка) остаётся прежний расчёт: пустая плашка
-             хуже приблизительной. */
+             хуже приблизительной.
+             #RADEX-264: но подмена методической величины приборными 20 % —
+             не «приблизительно», а другое число под тем же именем, и человек
+             не может их различить. Нет UV(t) — нет и интервала (null ниже). */
           const relTot = (assessViewData && assessViewData.verdict !== 'too_short'
                           && isFinite(assessViewData.uv) && assessViewData.uv >= 0
                           && isFinite(assessViewData.u_d_eff))
             ? bandHalfWidth(assessViewData.uv, assessViewData.u_d_eff)
-            : Math.sqrt(uStatRel * uStatRel + uInstRel * uInstRel);
+            : null;
+          void uStatRel; void uInstRel;   /* #RADEX-264: больше не идут в плашку */
           /* #RADEX-146: прямоугольник HTML-кнопки полноэкранного режима
              (#RADEX-137) в тех же координатах, что остальные avoidBox — CSS-
              пиксели относительно rect (вычислен выше, в начале multiRedraw()).
@@ -2638,9 +2659,18 @@ function multiRedraw() {
                             && isFinite(assessViewData.c) && assessViewData.c > 0
                             && isFinite(assessViewData.uv) && assessViewData.uv >= 0;
           const plaqueVal = useMethod ? assessViewData.c : mv;
-          meanBadgeBox = drawMeanPlaque(multiCtx, plaqueVal, plaqueVal * relTot, relTot, wtot,
+          /* #RADEX-264: пока UV(t) нет — вместо числа говорим, с какой
+             длительности он появится. Порог берём из таблиц платы: нормальная
+             вентиляция — с 4 суток, ограниченная — с 2. */
+          const minD = methodMinDays(!!(assessViewData && assessViewData.restricted), methodTables);
+          const note = useMethod ? null
+            : (minD ? `интервал по методике — с ${minD} сут теста`
+                    : 'интервал по методике пока недоступен');
+          meanBadgeBox = drawMeanPlaque(multiCtx, plaqueVal,
+            (relTot === null ? null : plaqueVal * relTot), relTot, wtot,
             { width, rightMargin: PADR, topMargin: PADT }, C.mean,
-            { avoidBox: fsBtnBox, label: useMethod ? 'расчётная среднегодовая' : 'среднее' });
+            { avoidBox: fsBtnBox, note: note,
+              label: useMethod ? 'расчётная среднегодовая' : 'среднее' });
         }
       }
 

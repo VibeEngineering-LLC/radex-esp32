@@ -510,6 +510,10 @@
 
         <div class="card int-nm">
       <h2 class="section-title">Народный Мониторинг</h2>
+      <!-- #RADEX-263: состояние выгрузки на экране. Его не было вовсе: кнопка
+           всегда читалась «Включить отправку», и включена выгрузка или нет,
+           узнать было негде. -->
+      <div id="nm-state" class="sub" style="margin-bottom:8px">состояние читается…</div>
       <form id="narodmon-form">
         <div class="form-group">
           <!-- #RADEX-229: поле НИКОГДА не было адресом сайта — плата проверяет его
@@ -949,6 +953,13 @@
       document.getElementById('ha-form').addEventListener('submit', saveHaSettings);
       document.getElementById('narodmon-form').addEventListener('submit', saveNarodmonSettings);
       document.getElementById('nm-enable-btn').addEventListener('click', enableNarodmon);
+      /* #RADEX-263: пометка «человек правит поле» — пока она стоит, обновление
+         из /api/narodmon не трогает ввод. Снимается после успешного сохранения,
+         и тогда поля снова показывают то, что реально лежит на плате. */
+      ['nm-host', 'nm-interval'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', function () { el.dataset.touched = '1'; });
+      });
 
       // Кнопка показа лога
       document.getElementById('show-log-btn').addEventListener('click', showLog);
@@ -1071,11 +1082,29 @@
              не трогал. Ровно его требует narodmon.ru как идентификатор станции, и
              взять его пользователю было негде — поле стояло пустым с плейсхолдером
              «narodmon.ru», и туда вписывали домен. Заполняем только пустое и не
-             сфокусированное поле, чтобы не затирать набранное вручную. */
+             сфокусированное поле, чтобы не затирать набранное вручную.
+
+             #RADEX-263: но ПЕРВЫМ источником обязано быть СОХРАНЁННОЕ на плате
+             значение (nmRes.mac), а не автоподстановка. Прежде ответ /api/narodmon
+             в поля не попадал вовсе — из всей пачки брался только nmRes.status, —
+             и страница всегда рисовала MAC платы независимо от того, что реально
+             лежит в NVS. На живой плате 07.09 это выглядело так: в NVS mac="" и
+             интервал 10, а на экране MAC платы и «30». Пользователь
+             видит верный адрес, отправка идёт под совсем другим — ровно жалоба
+             «в интерфейсе прописано правильно, а на narodmon уходит чужой MAC».
+             Интерфейс, показывающий не то, что сохранено, вводит в заблуждение
+             и делает разбор невозможным. */
           const nmHost = document.getElementById('nm-host');
-          if (nmHost && systemRes && systemRes.sta_mac &&
-              !nmHost.value && document.activeElement !== nmHost) {
-            nmHost.value = systemRes.sta_mac;
+          if (nmHost && !nmHost.dataset.touched && document.activeElement !== nmHost) {
+            const savedMac = (nmRes && nmRes.mac) ? nmRes.mac : '';
+            if (savedMac) nmHost.value = savedMac;
+            else if (systemRes && systemRes.sta_mac && !nmHost.value)
+              nmHost.value = systemRes.sta_mac;
+          }
+          const nmInt = document.getElementById('nm-interval');
+          if (nmInt && !nmInt.dataset.touched && document.activeElement !== nmInt &&
+              nmRes && nmRes.interval_min > 0) {
+            nmInt.value = nmRes.interval_min;
           }
         }
         // history НЕ перетираем ответом /api/history: график берёт данные
@@ -1102,6 +1131,7 @@
         // подпись под графиком обновляет updateChartNote() — см. loadHistoryRange
         haStatus = haRes.status || '';
         nmStatus = nmRes.status || '';
+        renderNarodmonState(nmRes);   /* #RADEX-263 */
 
         /* #RADEX-150: заключение рисуется ОДИН раз и сразу в обе карточки, из
            того же объекта, что и всё остальное в этой пачке.
@@ -3978,32 +4008,90 @@ function drawChart() {
          адрес сайта, а MAC станции: плата проверяет его is_valid_mac() и на
          JSON выдавала «Некорректный формат MAC-адреса: {…}» (жалоба
          пользователя 04.09). */
+      /* #RADEX-263: успехом считаем ТОЛЬКО {"ok":true} в теле. Плата отвечает
+         кодом 200 и в случае отказа тоже (handle_nm_enable), поэтому проверка
+         одного лишь HTTP-статуса показывала «сохранено/включено» там, где
+         настройка не принята. */
       fetch('/api/narodmon', {
         method: 'POST',
         body: `${host}|${interval}`
       })
-      .then(r => {
-        if (!r.ok) { alert('Плата отклонила настройки: MAC станции должен быть вида AA:BB:CC:DD:EE:FF, интервал 5–1440 мин'); return; }
+      .then(r => r.json().then(j => ({ httpOk: r.ok, body: j })).catch(() => ({ httpOk: r.ok, body: null })))
+      .then(({ httpOk, body }) => {
+        if (!httpOk || !body || body.ok !== true) {
+          alert('Плата отклонила настройки: MAC станции должен быть вида AA:BB:CC:DD:EE:FF, интервал 5–1440 мин');
+          return;
+        }
+        /* Поля снова следуют за платой: показываем сохранённое, а не набранное. */
+        ['nm-host', 'nm-interval'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) delete el.dataset.touched;
+        });
         alert('Настройки Народмон сохранены');
+        updateAllData();
       })
       .catch(() => alert('Не удалось отправить настройки на плату'));
     }
 
+    /* #RADEX-263: состояние выгрузки рисуется из ответа платы. Поля status,
+       которое читал прежний код (nmRes.status), плата не отдаёт вовсе — строка
+       всегда была пустой, и включённость нигде не показывалась. */
+    let nmEnabled = false;
+    function renderNarodmonState(nm) {
+      const el = document.getElementById('nm-state');
+      const btn = document.getElementById('nm-enable-btn');
+      if (!el || !nm) return;
+      nmEnabled = (nm.enabled === true);
+      let t = nmEnabled ? 'отправка включена' : 'отправка выключена';
+      if (!nm.configured) t += ' · адрес станции не задан';
+      if (nm.last_ok_sec >= 0) {
+        const s = nm.last_ok_sec;
+        t += ' · последняя удачная ' + (s < 90 ? s + ' с' : Math.round(s / 60) + ' мин') + ' назад';
+      } else if (nmEnabled) {
+        t += ' · удачных отправок ещё не было';
+      }
+      if (nm.last_error) t += ' · ответ сервера: ' + String(nm.last_error).trim();
+      el.textContent = t;
+      el.style.color = nmEnabled ? 'var(--ok)' : '';
+      if (btn) btn.textContent = nmEnabled ? 'Выключить отправку' : 'Включить отправку';
+    }
+
     function enableNarodmon() {
+      if (nmEnabled) { disableNarodmon(); return; }
       if (confirm('Включить отправку показаний на narodmon.ru? Данные уйдут на внешний сервер.')) {
         /* #RADEX-229: адрес был '/api/narodmon' — то есть включение уходило в
            обработчик НАСТРОЕК, а не в handle_nm_enable; тот к тому же ждёт
-           тело '1'/'0', а не JSON (буфер 8 байт — JSON в него и не влезал). */
+           тело '1'/'0', а не JSON (буфер 8 байт — JSON в него и не влезал).
+           #RADEX-263: отказ приходит как 200 {"ok":false} — на живой плате
+           07.09 при незаданном адресе станции ответ был именно такой, и
+           страница рапортовала «Отправка включена», хотя модуль отказал. */
         fetch('/api/narodmon/enable', {
           method: 'POST',
           body: '1'
         })
-        .then(r => {
-          if (!r.ok) { alert('Плата не включила отправку: сначала сохраните MAC станции и интервал'); return; }
+        .then(r => r.json().then(j => ({ httpOk: r.ok, body: j })).catch(() => ({ httpOk: r.ok, body: null })))
+        .then(({ httpOk, body }) => {
+          if (!httpOk || !body || body.ok !== true) {
+            alert('Плата не включила отправку: сначала сохраните MAC станции и интервал');
+            return;
+          }
           alert('Отправка включена');
+          updateAllData();
         })
         .catch(() => alert('Не удалось отправить команду на плату'));
       }
+    }
+
+    /* #RADEX-263: обратное действие — той же кнопкой. Выключить выгрузку из
+       интерфейса было нельзя вовсе: только перезагрузкой платы. */
+    function disableNarodmon() {
+      fetch('/api/narodmon/enable', { method: 'POST', body: '0' })
+        .then(r => r.json().then(j => ({ httpOk: r.ok, body: j })).catch(() => ({ httpOk: r.ok, body: null })))
+        .then(({ httpOk, body }) => {
+          if (!httpOk || !body || body.ok !== true) { alert('Плата не выключила отправку'); return; }
+          updateAllData();
+        })
+        .catch(() => alert('Не удалось отправить команду на плату'));
     }
 
 /* #RADEX-150, оператор: «результат на вкладках показания и метод должен

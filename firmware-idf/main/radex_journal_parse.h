@@ -83,6 +83,7 @@ typedef struct {
     bool     ok;                 // последний сеанс прошёл все шаги
     char     status[48];         // "ok" | "timeout: step N" | "disconnect" | ...
     uint32_t finished_s;         // аптайм завершения, с
+    uint16_t mtu;                // ATT MTU соединения (23 = не согласован; записи нужен >= 27)
     bool     have_summary;
     radex_journal_summary_t summary;
     uint8_t  n_summary_pkt;

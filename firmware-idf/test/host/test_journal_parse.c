@@ -239,6 +239,7 @@ static void test_json_shape(void) {
     j.ok = true;
     strcpy(j.status, "ok");
     j.finished_s = 42;
+    j.mtu = 247;
     j.have_summary = true;
     j.summary.last_record = 3;
     j.summary.avg = 125.25f;
@@ -255,6 +256,7 @@ static void test_json_shape(void) {
     int n = radex_journal_json(&j, false, true, buf, sizeof(buf));
     CHECK(n > 0, "json returned %d", n);
     CHECK(strstr(buf, "\"pending\":true"), "contains pending");
+    CHECK(strstr(buf, "\"mtu\":247"), "contains mtu");
     CHECK(strstr(buf, "\"last_record\":3"), "contains last_record");
     CHECK(strstr(buf, "\"avg\":125.25"), "contains avg");
     CHECK(strstr(buf, "\"number\":3"), "contains number");

@@ -152,7 +152,8 @@ int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *
         }
     }
     st[st_len] = '\0';
-    if (!app(buf, len, &o, ",\"status\":\"%s\",\"finished_s\":%lu", st, (unsigned long)j->finished_s)) return -1;
+    if (!app(buf, len, &o, ",\"status\":\"%s\",\"finished_s\":%lu,\"mtu\":%u", st,
+             (unsigned long)j->finished_s, (unsigned)j->mtu)) return -1;
 
     if (!app(buf, len, &o, ",\"summary\":")) return -1;
     if (!j->have_summary) {

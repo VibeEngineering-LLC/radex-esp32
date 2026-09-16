@@ -13,4 +13,5 @@ bool ble_radex_journal_pending(void);
 void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t conn_id, const uint8_t *bda);
 void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_cb_param_t *param);
 void ble_radex_journal_on_disconnect(void);
+void ble_radex_journal_set_mtu(uint16_t mtu);          // из GATTS_MTU_EVT ble_radex.c
 int  ble_radex_journal_json(char *buf, size_t len);   // JSON для GET /api/journal

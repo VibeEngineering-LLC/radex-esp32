@@ -45,7 +45,14 @@ static const j_step_t s_steps[] = {
 // Параметры 0x48 НЕ поняты: 02 00 01 00 вернуло записи 3 и 2 из трёх. Запись — WRITE_TYPE_RSP
 // (тип ATT-записи приложения в отчёте не указан): нужна квитанция, чтобы шаги не наложились.
 
-typedef enum { J_IDLE, J_DELAY, J_WAIT } j_state_t;
+/* MTU. Запись журнала — 24 байта; при ATT MTU 23 notify режется до 20 (теряются T и RH).
+   Запрос MTU делаем НЕ в OPEN_EVT, а первым шагом сеанса: в OPEN_EVT он пересёкся бы с
+   первым чтением опроса, которое ble_radex.c шлёт из UPDATE_CONN_PARAMS_EVT без ожидания.
+   Здесь же круг опроса гарантированно стоит (can_start), так что операция одна. */
+#define J_MTU_MIN  27
+static volatile uint16_t s_mtu = 23;
+static volatile bool     s_mtu_evt;
+typedef enum { J_IDLE, J_MTU_WAIT, J_DELAY, J_WAIT } j_state_t;
 static j_state_t        s_state = J_IDLE;       /* меняется только в tick (задача ble_radex) */
 static volatile bool    s_pending;              /* запрос из Web */
 static volatile bool    s_abort_disc;           /* разрыв, выставляется из GATTC-колбэка */
@@ -150,9 +157,15 @@ bool ble_radex_journal_pending(void)
 
 void ble_radex_journal_on_disconnect(void)
 {
+    s_mtu = 23;   /* MTU живёт в пределах соединения */
     if (s_active) {
         s_abort_disc = true;
     }
+}
+
+void ble_radex_journal_set_mtu(uint16_t mtu)   /* обмен MTU, начатый прибором (GATTS_MTU_EVT) */
+{
+    s_mtu = mtu;
 }
 
 static void j_start(esp_gatt_if_t gif, uint16_t conn, const uint8_t *bda)
@@ -175,11 +188,17 @@ static void j_start(esp_gatt_if_t gif, uint16_t conn, const uint8_t *bda)
         j_finish(false, "register_for_notify failed");   /* ASCII: статус уходит в JSON */
         return;
     }
-    ESP_LOGI(TAG, "сеанс журнала: старт (%d шагов)", J_STEPS);
+    ESP_LOGI(TAG, "сеанс журнала: старт (%d шагов), MTU=%u", J_STEPS, (unsigned)s_mtu);
     s_step = 0;
     s_t0 = xTaskGetTickCount();
     s_active = true;
-    s_state = J_DELAY;
+    if (s_mtu >= J_MTU_MIN) { s_state = J_DELAY; return; }
+    s_mtu_evt = false;
+    e = esp_ble_gattc_send_mtu_req(gif, conn);   /* локальный MTU 247 задан в ble_radex.c */
+    if (e != ESP_OK) { j_finish(false, "mtu req send failed"); return; }
+    ESP_LOGW(TAG, "MTU=%u < %d — запрашиваю обмен MTU перед журналом", (unsigned)s_mtu, J_MTU_MIN);
+    s_deadline = s_t0 + pdMS_TO_TICKS(J_STEP_TIMEOUT_MS);
+    s_state = J_MTU_WAIT;
 }
 
 void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t conn_id, const uint8_t *bda)
@@ -195,6 +214,20 @@ void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t con
     if (s_abort_disc) {
         snprintf(st, sizeof st, "disconnect: step %d", s_step);
         j_finish(false, st);
+        return;
+    }
+    if (s_state == J_MTU_WAIT) {
+        if (s_mtu_evt || (int32_t)(now - s_deadline) >= 0) {
+            if (s_mtu < J_MTU_MIN) {   /* проверка перед сеансом: без MTU>=27 записи не читаем */
+                ESP_LOGE(TAG, "MTU=%u < %d (обмен %s) — журнал НЕ читаю: запись 24 байта обрежется",
+                         (unsigned)s_mtu, J_MTU_MIN, s_mtu_evt ? "завершён" : "не ответил");
+                snprintf(st, sizeof st, "mtu %u < %d", (unsigned)s_mtu, J_MTU_MIN);
+                j_finish(false, st);
+                return;
+            }
+            s_t0 = now;
+            s_state = J_DELAY;
+        }
         return;
     }
     const j_step_t *sp = &s_steps[s_step];
@@ -240,6 +273,12 @@ void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t con
 void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_cb_param_t *param)
 {
     switch (event) {
+        case ESP_GATTC_CFG_MTU_EVT:   /* и наш запрос, и обмен, начатый прибором */
+            if (param->cfg_mtu.status == ESP_GATT_OK) s_mtu = param->cfg_mtu.mtu;
+            ESP_LOGI(TAG, "MTU согласован: %u (status=%d)", (unsigned)param->cfg_mtu.mtu,
+                     (int)param->cfg_mtu.status);
+            s_mtu_evt = true;
+            break;
         case ESP_GATTC_REG_FOR_NOTIFY_EVT:
             if (param->reg_for_notify.handle == RADEX_NUS_H_TX) {
                 ESP_LOGI(TAG, "подписка на notify 0x%04X: status=%d", param->reg_for_notify.handle, (int)param->reg_for_notify.status);
@@ -311,6 +350,7 @@ int ble_radex_journal_json(char *buf, size_t len)
     if (s_mtx) {
         xSemaphoreTake(s_mtx, portMAX_DELAY);
     }
+    s_result.mtu = s_mtu;   /* текущий MTU соединения, а не на момент сеанса */
     int n = radex_journal_json(&s_result, s_state != J_IDLE, s_pending, buf, len);
     if (s_mtx) {
         xSemaphoreGive(s_mtx);

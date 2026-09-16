@@ -441,6 +441,7 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
     (void)gatts_if;
     if (event == ESP_GATTS_MTU_EVT) {
         ESP_LOGI(TAG, "прибор согласовал MTU=%d", param->mtu.mtu);
+        ble_radex_journal_set_mtu(param->mtu.mtu);   /* #RADEX-281: журналу нужен MTU >= 27 */
         if (s_mtu_state == 0) {
             s_mtu_state = 3;
         }

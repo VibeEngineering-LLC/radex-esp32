@@ -22,6 +22,7 @@ idf_component_register(
         "radex_journal_track.c"   # #RADEX-281: привязка квитанций/notify к шагу, хост-тест
         "target_label.c"          # #RADEX-283: имя замера и сравнение MAC, хост-тест
         "target_switch.c"         # #RADEX-283: смена прибора с сохранением замера
+        "label_utf8.c"            # #RADEX-274: имя замера с кириллицей, хост-тест
     INCLUDE_DIRS "."
     EMBED_FILES
         "../web/index.html"

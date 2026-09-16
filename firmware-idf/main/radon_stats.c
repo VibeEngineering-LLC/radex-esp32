@@ -12,6 +12,7 @@
 #include <time.h>
 #include <math.h>   /* sqrt в критерии (1) методики */
 #include "radon_method.h"   /* #RADEX-271: порог правила §7.1.2 — 10 месяцев */
+#include "label_utf8.h"     /* #RADEX-274: имя замера с кириллицей, JSON-экранирование */
 #include <sys/stat.h>
 #include <esp_spiffs.h>
 #include <esp_timer.h>   /* #RADEX-113: относительные метки до синхронизации */
@@ -1192,13 +1193,15 @@ static int radon_stats_tests_list_json_locked(char *buf, size_t len) {
         /* #RADEX-228: имя замера из реестра. Пустая строка — имени не давали:
            поле есть ВСЕГДА, чтобы странице не приходилось различать «поля нет»
            и «имя пустое». */
-        char label[32] = {0};
+        char label[RADEX_LABEL_MAX_BYTES + 1] = {0};
         radon_stats_test_label_get((time_t)start_epoch, label, sizeof(label));
+        char label_js[RADEX_LABEL_MAX_BYTES * 6 + 1];   /* #RADEX-274: экранирование — вторая линия */
+        if (radex_json_escape(label, label_js, sizeof(label_js)) < 0) label_js[0] = '\0';
 
         written = snprintf(buf + pos, len - pos,
             "%s{\"start\":%lld,\"points\":%u,\"span_sec\":%u,\"active\":%s,\"label\":\"%s\"}",
             count > 0 ? "," : "", start_epoch, (unsigned)points, (unsigned)span,
-            is_active ? "true" : "false", label);
+            is_active ? "true" : "false", label_js);
         if (written < 0 || (size_t)written >= len - pos) { closedir(d); return -1; }
         pos += (size_t)written;
         count++;
@@ -1962,7 +1965,9 @@ int radon_stats_import_commit(void)
     return s_import_rows;
 }
 
-#define RADON_LABEL_MAX 24
+/* #RADEX-274: лимит имени — в БАЙТАХ UTF-8 (label_utf8.h); ширина %48[...] в sscanf ниже
+   обязана совпадать с RADEX_LABEL_MAX_BYTES. */
+#define RADON_LABEL_MAX RADEX_LABEL_MAX_BYTES
 static const char *labels_file = "/data/labels.csv";
 
 int radon_stats_assess_test_json(char *buf, size_t len, time_t start,
@@ -1991,28 +1996,11 @@ int radon_stats_assess_test_json(char *buf, size_t len, time_t start,
     return assess_json_fmt(buf, len, &a, u_d, restricted, lo, to);
 }
 
+/* #RADEX-274: латиница-only санитайзер заменён на radex_label_sanitize() (label_utf8.c):
+   кириллица и пробел разрешены, запятая — разделитель CSV — в имя не попадает. */
 static void radon_label_sanitize(const char *in, char *out, size_t out_sz)
 {
-    if (!in || out_sz == 0) {
-        if (out_sz > 0) out[0] = '\0';
-        return;
-    }
-
-    size_t i = 0;
-    bool wrote = false;
-    for (size_t j = 0; j < out_sz - 1 && in[j] != '\0'; ++j) {
-        char c = in[j];
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_') {
-            out[i++] = c;
-            wrote = true;
-        } else if (c == ' ' && wrote) {
-            out[i++] = '_';
-        }
-    }
-
-    while (i > 0 && out[i - 1] == '_') --i;
-    out[i] = '\0';
+    (void)radex_label_sanitize(in, out, out_sz);
 }
 
 int radon_stats_test_label_get(time_t start, char *out, size_t out_sz)
@@ -2031,7 +2019,7 @@ int radon_stats_test_label_get(time_t start, char *out, size_t out_sz)
     char name[RADON_LABEL_MAX + 1];
 
     while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "%lld,%24[^\n,]", &s, name) == 2 && (time_t)s == start) {
+        if (sscanf(line, "%lld,%48[^\n,]", &s, name) == 2 && (time_t)s == start) {   /* 48 = RADEX_LABEL_MAX_BYTES */
             snprintf(out, out_sz, "%s", name);
             result = strlen(out);
             break;

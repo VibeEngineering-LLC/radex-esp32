@@ -14,6 +14,7 @@
 #include "ble_radex.h"
 #include "ble_radex_journal.h"   /* #RADEX-281 */
 #include "target_switch.h"       /* #RADEX-283 */
+#include "label_utf8.h"          /* #RADEX-274 */
 #include "radex_journal_parse.h" /* RADEX_J_JSON_MAX */
 #include "ha_mqtt.h"
 #include "log_ring.h"
@@ -355,7 +356,7 @@ static esp_err_t handle_test_delete(httpd_req_t *req)
    быть пустым). Снимает идущий замер в его файл и подписывает: у неявного
    замера файла нет, и без снимка сохранять было бы нечего. */
 static esp_err_t handle_test_save(httpd_req_t *req) {
-    char body[40] = {0};
+    char body[256] = {0};   /* #RADEX-274: было 40 — кириллица в UTF-8 вдвое длиннее */
     int len = req->content_len;
     if (len > 0 && len < (int)sizeof(body)) {
         int received = httpd_req_recv(req, body, len);
@@ -376,15 +377,18 @@ static esp_err_t handle_test_save(httpd_req_t *req) {
 
     radon_stats_test_label_set(start, body);
 
-    char stored[32] = {0};
+    /* #RADEX-274: имя до 48 байт UTF-8, в JSON — через radex_json_escape */
+    char stored[RADEX_LABEL_MAX_BYTES + 1] = {0};
     radon_stats_test_label_get(start, stored, sizeof(stored));
+    char stored_js[RADEX_LABEL_MAX_BYTES * 6 + 1];
+    if (radex_json_escape(stored, stored_js, sizeof(stored_js)) < 0) stored_js[0] = '\0';
 
-    char resp[128];
+    char resp[400];
     /* time_t в IDF 64-битный — печатать %lld с явным приведением, как во всех
        остальных ответах модуля; %ld здесь роняет сборку (-Werror=format). */
     int resp_len = snprintf(resp, sizeof(resp),
                             "{\"ok\":true,\"start\":%lld,\"points\":%u,\"label\":\"%s\"}",
-                            (long long)start, (unsigned)points, stored);
+                            (long long)start, (unsigned)points, stored_js);
     if (resp_len < 0 || resp_len >= (int)sizeof(resp)) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
@@ -402,7 +406,7 @@ static esp_err_t handle_test_save(httpd_req_t *req) {
    сохранялись месяцами (#RADEX-229 / P-033). */
 static esp_err_t handle_test_label(httpd_req_t *req)
 {
-    char body[64] = {0};
+    char body[256] = {0};   /* #RADEX-274: было 64 */
     int len = req->content_len;
     if (len <= 0 || len >= (int)sizeof(body)) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "нужно тело <start>|<имя>");
@@ -436,11 +440,13 @@ static esp_err_t handle_test_label(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char stored[32] = {0};
+    char stored[RADEX_LABEL_MAX_BYTES + 1] = {0};   /* #RADEX-274 */
     radon_stats_test_label_get((time_t)start, stored, sizeof(stored));
+    char stored_js[RADEX_LABEL_MAX_BYTES * 6 + 1];
+    if (radex_json_escape(stored, stored_js, sizeof(stored_js)) < 0) stored_js[0] = '\0';
 
-    char resp[96];
-    int n = snprintf(resp, sizeof(resp), "{\"ok\":true,\"start\":%lld,\"label\":\"%s\"}", start, stored);
+    char resp[400];
+    int n = snprintf(resp, sizeof(resp), "{\"ok\":true,\"start\":%lld,\"label\":\"%s\"}", start, stored_js);
     if (n < 0 || n >= (int)sizeof(resp)) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
@@ -1362,20 +1368,25 @@ static esp_err_t handle_history_import_body(httpd_req_t *req)
     }
 
     // Пытаемся извлечь метку из строки запроса
-    char q[96], val[32];
+    /* #RADEX-274: страница шлёт имя encodeURIComponent — кириллица приходит %D0%.. и
+       без декодирования терялась бы санитайзером */
+    char q[512], val[320], dec[256];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
         httpd_query_key_value(q, "label", val, sizeof(val)) == ESP_OK) {
-        radon_stats_test_label_set(start, val);
+        radex_url_decode(val, dec, sizeof(dec));
+        radon_stats_test_label_set(start, dec);
     }
 
     // Читаем сохранённую метку
-    char stored[32] = {0};
+    char stored[RADEX_LABEL_MAX_BYTES + 1] = {0};
     radon_stats_test_label_get(start, stored, sizeof(stored));
+    char stored_js[RADEX_LABEL_MAX_BYTES * 6 + 1];
+    if (radex_json_escape(stored, stored_js, sizeof(stored_js)) < 0) stored_js[0] = '\0';
 
     // Формируем JSON-ответ
-    char rout[128];
+    char rout[400];
     int rlen = snprintf(rout, sizeof(rout), "{\"ok\":true,\"start\":%lld,\"rows\":%d,\"label\":\"%s\"}",
-                        (long long)start, rows, stored);
+                        (long long)start, rows, stored_js);
     if (rlen < 0 || rlen >= (int)sizeof(rout)) {
         return httpd_resp_send_500(req);
     }

@@ -6,6 +6,7 @@
 
 #include "ble_radex_journal.h"
 #include "radex_journal_parse.h"
+#include "radex_journal_track.h"
 #include <stdio.h>
 #include <string.h>
 #include <esp_log.h>
@@ -21,7 +22,7 @@
 #define J_STEP_TIMEOUT_MS  3000
 #define J_HEX_MAX          64      /* байт в строке hex-лога */
 
-typedef enum { J_OP_CCCD_ON, J_OP_WRITE } j_op_t;
+typedef enum { J_OP_CCCD_ON, J_OP_WRITE, J_OP_CCCD_OFF } j_op_t;
 typedef enum { J_PH_SUMMARY, J_PH_RECORDS } j_phase_t;
 typedef struct {
     j_op_t          op;
@@ -38,6 +39,8 @@ static const j_step_t s_steps[] = {
     { J_OP_WRITE,   RADEX_J_CMD_RECORDS,      300, false, J_PH_RECORDS },
     { J_OP_WRITE,   RADEX_J_CMD_RECORDS_NEXT, 100, true,  J_PH_RECORDS },
     { J_OP_WRITE,   RADEX_J_CMD_RECORDS_NEXT, 0,   true,  J_PH_RECORDS },
+    /* аудит 281-B F7: выключить уведомления в конце сеанса (в захвате не было) */
+    { J_OP_CCCD_OFF, NULL,                    0,   false, J_PH_RECORDS },
 };
 #define J_STEPS ((int)(sizeof(s_steps) / sizeof(s_steps[0])))
 
@@ -55,16 +58,13 @@ static volatile bool     s_mtu_evt;
 typedef enum { J_IDLE, J_MTU_WAIT, J_DELAY, J_WAIT } j_state_t;
 static j_state_t        s_state = J_IDLE;       /* меняется только в tick (задача ble_radex) */
 static volatile bool    s_pending;              /* запрос из Web */
-static volatile bool    s_abort_disc;           /* разрыв, выставляется из GATTC-колбэка */
-static int              s_step;
+static volatile int     s_step;                 /* пишет tick под s_mtx, читает колбэк */
 static TickType_t       s_t0;                   /* начало паузы шага */
 static TickType_t       s_deadline;
-static volatile bool    s_ack;
-static volatile int     s_ack_status;
-static volatile uint32_t s_notify_cnt;
-static uint32_t         s_notify_base;
+static radex_j_track_t  s_trk;                  /* под s_mtx: квитанции/notify по шагам */
+static uint32_t         s_sess_gen;             /* поколение соединения, на котором идёт сеанс */
 static esp_gatt_if_t    s_gif;
-static uint16_t         s_conn;
+static volatile uint16_t s_conn;
 static radex_journal_t  s_work;                 /* под s_mtx */
 static radex_journal_t  s_result;               /* под s_mtx, отдаётся в Web */
 static SemaphoreHandle_t s_mtx;
@@ -83,49 +83,61 @@ static void j_log_hex(const char *dir, uint16_t handle, const uint8_t *p, size_t
 
 static esp_err_t j_write_cmd(const uint8_t *cmd, size_t len)
 {
-    if (!radex_journal_cmd_allowed(cmd, len)) {
-        ESP_LOGE(TAG, "ОТКАЗ: команда вне белого списка (len=%u, первый байт 0x%02X) — не отправлена", (unsigned)len, cmd ? cmd[0] : 0);
+    /* аудит 281-A F5: сначала копия, проверяется и отправляется ОДНА и та же копия */
+    uint8_t tmp[RADEX_J_CMD_LEN];
+    if (cmd == NULL || len != RADEX_J_CMD_LEN) {
+        ESP_LOGE(TAG, "ОТКАЗ: команда вне белого списка (len=%u) — не отправлена", (unsigned)len);
         return ESP_ERR_NOT_ALLOWED;
     }
-    uint8_t tmp[RADEX_J_CMD_LEN];
     memcpy(tmp, cmd, RADEX_J_CMD_LEN);
+    if (!radex_journal_cmd_allowed(tmp, RADEX_J_CMD_LEN)) {
+        ESP_LOGE(TAG, "ОТКАЗ: команда вне белого списка (первый байт 0x%02X) — не отправлена", tmp[0]);
+        return ESP_ERR_NOT_ALLOWED;
+    }
     j_log_hex("TX", RADEX_NUS_H_RX, tmp, RADEX_J_CMD_LEN);
     return esp_ble_gattc_write_char(s_gif, s_conn, RADEX_NUS_H_RX, RADEX_J_CMD_LEN, tmp, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
 }
 
-static esp_err_t j_write_cccd_on(void)
+static esp_err_t j_write_cccd(const uint8_t *val)   /* val: RADEX_J_CCCD_ON или RADEX_J_CCCD_OFF */
 {
-    static const uint8_t on[2] = {0x01, 0x00};
-    if (!radex_journal_cccd_allowed(on, 2)) {
+    uint8_t tmp[2];
+    if (val == NULL) return ESP_ERR_NOT_ALLOWED;
+    memcpy(tmp, val, 2);
+    if (!radex_journal_cccd_allowed(tmp, 2)) {
         ESP_LOGE(TAG, "ОТКАЗ: CCCD-запись вне белого списка — не отправлена");
         return ESP_ERR_NOT_ALLOWED;
     }
-    uint8_t tmp[2];
-    memcpy(tmp, on, 2);
     j_log_hex("TX", RADEX_NUS_H_CCCD, tmp, 2);
     return esp_ble_gattc_write_char_descr(s_gif, s_conn, RADEX_NUS_H_CCCD, 2, tmp, ESP_GATT_WRITE_TYPE_RSP, ESP_GATT_AUTH_REQ_NONE);
 }
 
+static void lk(void)  { if (s_mtx) xSemaphoreTake(s_mtx, portMAX_DELAY); }
+static void ulk(void) { if (s_mtx) xSemaphoreGive(s_mtx); }
+
+/* ok=true означает «все шаги пройдены»; итоговый статус решает radex_j_final_status:
+   без записей, с коротким пакетом (MTU) или с событиями вне шага — не "ok" (281-B F2/F3/F5). */
 static void j_finish(bool ok, const char *status)
 {
-    if (s_mtx) {
-        xSemaphoreTake(s_mtx, portMAX_DELAY);
-    }
+    lk();
     s_work.valid = true;
-    s_work.ok = ok;
-    snprintf(s_work.status, sizeof(s_work.status), "%s", status);
-    s_work.finished_s = (uint32_t)(esp_timer_get_time() / 1000000);
-    s_result = s_work;
-    if (s_mtx) {
-        xSemaphoreGive(s_mtx);
+    if (ok) {
+        ok = radex_j_final_status(&s_work, &s_trk, s_work.status, sizeof(s_work.status));
+    } else {
+        snprintf(s_work.status, sizeof(s_work.status), "%s", status);
     }
+    s_work.ok = ok;
+    s_work.finished_s = (uint32_t)(esp_timer_get_time() / 1000000);
     s_active = false;
+    s_result = s_work;
+    unsigned stale = s_trk.stale_acks, unexp = s_trk.unexpected, outst = s_trk.outstanding;
+    ulk();
     s_state = J_IDLE;
     if (ok) {
-        ESP_LOGI(TAG, "журнал прочитан: пакетов сводки %u, записей %u, пакетов записей %u", 
-                 s_work.n_summary_pkt, s_work.n_records, s_work.n_record_pkt);
+        ESP_LOGI(TAG, "журнал прочитан: пакетов сводки %u, записей %u, пакетов записей %u",
+                 (unsigned)s_result.n_summary_pkt, (unsigned)s_result.n_records, (unsigned)s_result.n_record_pkt);
     } else {
-        ESP_LOGE(TAG, "журнал НЕ прочитан: %s — возврат к обычному опросу", status);
+        ESP_LOGE(TAG, "журнал НЕ прочитан: %s (поздних квитанций %u, событий вне шага %u, "
+                      "неподтверждённых записей %u) — возврат к обычному опросу", s_result.status, stale, unexp, outst);
     }
 }
 
@@ -158,9 +170,10 @@ bool ble_radex_journal_pending(void)
 void ble_radex_journal_on_disconnect(void)
 {
     s_mtu = 23;   /* MTU живёт в пределах соединения */
-    if (s_active) {
-        s_abort_disc = true;
-    }
+    lk();
+    radex_j_track_reset_all(&s_trk);   /* очередь Bluedroid сброшена вместе со связью */
+    ulk();
+    /* сам сеанс снимает tick: соединение не то (281-B F4) */
 }
 
 void ble_radex_journal_set_mtu(uint16_t mtu)   /* обмен MTU, начатый прибором (GATTS_MTU_EVT) */
@@ -168,19 +181,17 @@ void ble_radex_journal_set_mtu(uint16_t mtu)   /* обмен MTU, начатый
     s_mtu = mtu;
 }
 
-static void j_start(esp_gatt_if_t gif, uint16_t conn, const uint8_t *bda)
+static void j_start(esp_gatt_if_t gif, uint16_t conn, uint32_t gen, const uint8_t *bda)
 {
     s_pending = false;
-    s_abort_disc = false;
     s_gif = gif;
     s_conn = conn;
-    if (s_mtx) {
-        xSemaphoreTake(s_mtx, portMAX_DELAY);
-    }
+    s_sess_gen = gen;   /* 281-B F4: сеанс принадлежит этому соединению */
+    lk();
     memset(&s_work, 0, sizeof(s_work));
-    if (s_mtx) {
-        xSemaphoreGive(s_mtx);
-    }
+    radex_j_track_new_session(&s_trk);
+    s_step = 0;
+    ulk();
     esp_bd_addr_t a;
     memcpy(a, bda, sizeof(a));
     esp_err_t e = esp_ble_gattc_register_for_notify(gif, a, RADEX_NUS_H_TX);
@@ -201,18 +212,24 @@ static void j_start(esp_gatt_if_t gif, uint16_t conn, const uint8_t *bda)
     s_state = J_MTU_WAIT;
 }
 
-void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t conn_id, const uint8_t *bda)
+void ble_radex_journal_tick(bool can_start, bool connected, uint32_t conn_gen,
+                            esp_gatt_if_t gattc_if, uint16_t conn_id, const uint8_t *bda)
 {
     TickType_t now = xTaskGetTickCount();
     char st[48];
     if (s_state == J_IDLE) {
-        if (s_pending && can_start && bda) {
-            j_start(gattc_if, conn_id, bda);
+        lk();
+        bool drained = radex_j_track_can_start(&s_trk);   /* поздние квитанции прежнего сеанса дошли */
+        ulk();
+        if (s_pending && can_start && drained && bda) {
+            j_start(gattc_if, conn_id, conn_gen, bda);
         }
         return;
     }
-    if (s_abort_disc) {
-        snprintf(st, sizeof st, "disconnect: step %d", s_step);
+    /* 281-B F4: разрыв в любой момент, включая окно между can_start и стартом, либо уже
+       новое соединение — сеанс снимается, на чужом соединении он не продолжается. */
+    if (!connected || conn_gen != s_sess_gen || conn_id != s_conn) {
+        snprintf(st, sizeof st, "connection lost: step %d", (int)s_step);
         j_finish(false, st);
         return;
     }
@@ -233,28 +250,35 @@ void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t con
     const j_step_t *sp = &s_steps[s_step];
     if (s_state == J_DELAY) {
         if ((now - s_t0) < pdMS_TO_TICKS(sp->delay_ms)) return;
-        s_ack = false;
-        s_ack_status = 0;
-        s_notify_base = s_notify_cnt;
-        esp_err_t e = (sp->op == J_OP_CCCD_ON) ? j_write_cccd_on() : j_write_cmd(sp->cmd, RADEX_J_CMD_LEN);
-        if (e != ESP_OK) {
-            snprintf(st, sizeof st, "send error 0x%x: step %d", (unsigned)e, s_step);
+        esp_err_t e = (sp->op == J_OP_CCCD_ON)  ? j_write_cccd(RADEX_J_CCCD_ON)
+                    : (sp->op == J_OP_CCCD_OFF) ? j_write_cccd(RADEX_J_CCCD_OFF)
+                    : j_write_cmd(sp->cmd, RADEX_J_CMD_LEN);
+        if (e != ESP_OK) {   /* синхронный отказ: запись не ушла, квитанции не будет */
+            snprintf(st, sizeof st, "send error 0x%x: step %d", (unsigned)e, (int)s_step);
             j_finish(false, st);
             return;
         }
+        lk();
+        radex_j_track_on_send(&s_trk, sp->op == J_OP_WRITE ? RADEX_NUS_H_RX : RADEX_NUS_H_CCCD,
+                              sp->expect_notify);
+        ulk();
         s_deadline = now + pdMS_TO_TICKS(J_STEP_TIMEOUT_MS);
         s_state = J_WAIT;
         return;
     }
     /* J_WAIT */
-    if (s_ack && s_ack_status != ESP_GATT_OK) {
-        snprintf(st, sizeof st, "gatt status 0x%x: step %d", (unsigned)s_ack_status, s_step);
+    lk();
+    radex_j_track_t t = s_trk;
+    bool done = radex_j_track_step_done(&s_trk);
+    if (done) { radex_j_track_step_idle(&s_trk); s_step++; }   /* notify в паузе — уже «вне шага» */
+    ulk();
+    if (t.acked && t.ack_status != ESP_GATT_OK) {
+        snprintf(st, sizeof st, "gatt status 0x%x: step %d", (unsigned)t.ack_status, (int)s_step);
         j_finish(false, st);
         return;
     }
-    bool got_notify = s_notify_cnt > s_notify_base;
-    if (s_ack && (!sp->expect_notify || got_notify)) {
-        s_step++;
+    bool got_notify = t.notified;
+    if (done) {
         if (s_step >= J_STEPS) {
             j_finish(true, "ok");
             return;
@@ -264,8 +288,9 @@ void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t con
         return;
     }
     if ((int32_t)(now - s_deadline) >= 0) {
-        ESP_LOGE(TAG, "ТАЙМАУТ шага %d (%u мс): подтверждение записи=%d, notify=%d", s_step, (unsigned)J_STEP_TIMEOUT_MS, (int)s_ack, (int)got_notify);
-        snprintf(st, sizeof st, "timeout: step %d", s_step);
+        ESP_LOGE(TAG, "ТАЙМАУТ шага %d (%u мс): подтверждение записи=%d, notify=%d; всё пришедшее позже будет отброшено",
+                 (int)s_step, (unsigned)J_STEP_TIMEOUT_MS, (int)t.acked, (int)got_notify);
+        snprintf(st, sizeof st, "timeout: step %d", (int)s_step);
         j_finish(false, st);
     }
 }
@@ -286,15 +311,21 @@ void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_
             break;
         case ESP_GATTC_WRITE_CHAR_EVT:
         case ESP_GATTC_WRITE_DESCR_EVT:
-            if (s_active && param->write.conn_id == s_conn && 
-                (param->write.handle == RADEX_NUS_H_RX || param->write.handle == RADEX_NUS_H_CCCD)) {
-                s_ack_status = param->write.status;
-                s_ack = true;
-                if (param->write.status != ESP_GATT_OK) {
-                    ESP_LOGE(TAG, "запись в 0x%04X отвергнута прибором: status=0x%x", param->write.handle, (unsigned)param->write.status);
-                }
+        {   /* 281-B F2 / 281-A F4: засчитывается только квитанция последней записи текущего шага */
+            if (param->write.conn_id != s_conn) break;
+            lk();
+            radex_j_ev_t ev = radex_j_track_on_ack(&s_trk, param->write.handle, (int)param->write.status);
+            ulk();
+            if (ev == RJ_EV_FOREIGN) break;
+            if (ev == RJ_EV_CURRENT && param->write.status != ESP_GATT_OK) {
+                ESP_LOGE(TAG, "запись в 0x%04X отвергнута прибором: status=0x%x", param->write.handle, (unsigned)param->write.status);
+            } else if (ev == RJ_EV_STALE) {
+                ESP_LOGW(TAG, "поздняя квитанция 0x%04X (прежняя запись) отброшена", param->write.handle);
+            } else if (ev == RJ_EV_UNEXPECTED) {
+                ESP_LOGE(TAG, "квитанция 0x%04X вне шага отброшена — сеанс не будет ok", param->write.handle);
             }
             break;
+        }
         case ESP_GATTC_NOTIFY_EVT:
             if (param->notify.handle != RADEX_NUS_H_TX) {
                 break;
@@ -304,8 +335,12 @@ void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_
                 break;
             }
             j_log_hex("RX", RADEX_NUS_H_TX, param->notify.value, param->notify.value_len);
-            if (s_mtx) {
-                xSemaphoreTake(s_mtx, portMAX_DELAY);
+            lk();
+            if (radex_j_track_on_notify(&s_trk) != RJ_EV_CURRENT) {   /* 281-B F3: не свой шаг */
+                ulk();
+                ESP_LOGE(TAG, "notify вне шага %d отброшен (длина %u) — сеанс не будет ok",
+                         (int)s_step, (unsigned)param->notify.value_len);
+                break;
             }
             j_phase_t ph = s_steps[s_step < J_STEPS ? s_step : J_STEPS - 1].phase;
             if (ph == J_PH_SUMMARY) {
@@ -335,10 +370,7 @@ void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_
                 }
                 ESP_LOGI(TAG, "пакет записей: разбор=%d", r);
             }
-            if (s_mtx) {
-                xSemaphoreGive(s_mtx);
-            }
-            s_notify_cnt++;
+            ulk();
             break;
         default:
             break;

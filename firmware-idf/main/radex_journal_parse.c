@@ -25,6 +25,9 @@ bool radex_journal_cmd_allowed(const uint8_t *cmd, size_t len)
     return false;
 }
 
+const uint8_t RADEX_J_CCCD_ON[2]  = {0x01, 0x00};
+const uint8_t RADEX_J_CCCD_OFF[2] = {0x00, 0x00};
+
 bool radex_journal_cccd_allowed(const uint8_t *val, size_t len)
 {
     if (val == NULL || len != 2) return false;

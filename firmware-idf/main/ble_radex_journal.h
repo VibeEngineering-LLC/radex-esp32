@@ -10,7 +10,9 @@ void ble_radex_journal_request(void);          // из Web: поставить �
 bool ble_radex_journal_busy(void);             // сеанс идёт — опрос не начинать
 bool ble_radex_journal_pending(void);
 // Из главного цикла ble_radex (100 мс). can_start: связь есть и круг опроса не идёт.
-void ble_radex_journal_tick(bool can_start, esp_gatt_if_t gattc_if, uint16_t conn_id, const uint8_t *bda);
+// conn_gen растёт на каждом успешном open: сеанс снимается, если соединение сменилось.
+void ble_radex_journal_tick(bool can_start, bool connected, uint32_t conn_gen,
+                            esp_gatt_if_t gattc_if, uint16_t conn_id, const uint8_t *bda);
 void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_cb_param_t *param);
 void ble_radex_journal_on_disconnect(void);
 void ble_radex_journal_set_mtu(uint16_t mtu);          // из GATTS_MTU_EVT ble_radex.c

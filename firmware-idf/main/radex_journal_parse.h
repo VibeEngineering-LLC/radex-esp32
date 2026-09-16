@@ -24,6 +24,9 @@ extern const uint8_t RADEX_J_CMD_RECORDS_NEXT[RADEX_J_CMD_LEN];  // 82 ff 00 ..
 
 // true — только если (cmd,len) побайтно равен одной из четырёх команд выше.
 bool radex_journal_cmd_allowed(const uint8_t *cmd, size_t len);
+// Значения CCCD 0x0013: включить notify в начале сеанса, выключить в конце (аудит 281-B F7).
+extern const uint8_t RADEX_J_CCCD_ON[2];    // 01 00
+extern const uint8_t RADEX_J_CCCD_OFF[2];   // 00 00
 // true — только для значений CCCD 01 00 (включить notify) и 00 00 (выключить).
 bool radex_journal_cccd_allowed(const uint8_t *val, size_t len);
 

@@ -97,6 +97,7 @@ uint16_t s_conn_id;
 uint8_t s_handle_cursor;
 SemaphoreHandle_t s_reconnect_sem;
 static volatile int s_connected = 0;
+static volatile uint32_t s_conn_gen = 0;   /* #RADEX-281: номер соединения, растёт на каждом open */
 volatile TickType_t s_open_tick;
 volatile int s_mtu_state = 0;
 static volatile uint32_t s_read_ok, s_read_err, s_disconnects;
@@ -494,6 +495,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                 break;
             }
             s_conn_id = param->open.conn_id;
+            s_conn_gen++;   /* #RADEX-281 (281-B F4): поколение соединения для сеанса журнала */
             s_connected = 1;
             s_consec_open_fails = 0;   /* #RADEX-145: связь встала — счётчик залипания с нуля */
             s_reconnect_delay_ms = RADEX_RECONNECT_MIN_MS;   /* #RADEX-84: связь есть — пауза с нуля */
@@ -781,7 +783,7 @@ void ble_radex_start(ble_radex_cb_t cb)
         // #RADEX-281: журнал — только в паузе между кругами и после первого круга
         // соединения (s_mtu_state 1/2 = опрос уже запускался, согласование позади).
         ble_radex_journal_tick(s_connected && !s_poll_active && (s_mtu_state == 1 || s_mtu_state == 2),
-                               s_gattc_if, s_conn_id, s_target_addr);
+                               s_connected != 0, s_conn_gen, s_gattc_if, s_conn_id, s_target_addr);
         // #RADEX-153b: проверяем по-прежнему раз в 10 с, но печатаем только при
         // изменении четвёрки либо по heartbeat. Маркер «(без изменений)»
         // отличает heartbeat от строки по событию.

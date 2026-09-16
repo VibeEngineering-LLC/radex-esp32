@@ -230,6 +230,10 @@ static void test_cccd(void) {
     CHECK(!radex_journal_cccd_allowed(cccd4, 3), "cccd4 not allowed");
 
     CHECK(!radex_journal_cccd_allowed(NULL, 2), "NULL/2 not allowed");
+    /* аудит 281-B F7: константы сеанса сверяются с литералами, а не друг с другом */
+    CHECK(RADEX_J_CCCD_ON[0] == 0x01 && RADEX_J_CCCD_ON[1] == 0x00, "CCCD_ON literal 01 00");
+    CHECK(RADEX_J_CCCD_OFF[0] == 0x00 && RADEX_J_CCCD_OFF[1] == 0x00, "CCCD_OFF literal 00 00");
+    CHECK(radex_journal_cccd_allowed(RADEX_J_CCCD_OFF, 2), "CCCD_OFF allowed");
 }
 
 static void test_json_shape(void) {

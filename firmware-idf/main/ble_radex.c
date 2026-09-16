@@ -141,6 +141,8 @@ static volatile uint32_t s_reconnect_delay_ms = RADEX_RECONNECT_MIN_MS;
 #define RADEX_POLL_PERIOD_MS  600000   // 10 минут между кругами опроса
 static volatile TickType_t s_next_poll_tick;   // когда начать следующий круг
 static volatile int s_poll_active;             // круг идёт прямо сейчас
+static portMUX_TYPE s_poll_mux = portMUX_INITIALIZER_UNLOCKED;   // #RADEX-284: захват s_poll_active
+#define RADEX_POLL_RETRY_MS  30000   // #RADEX-284: повтор круга после отказа API чтения
 
 // #RADEX-153b (31.08): строка «статус: …» печаталась безусловно раз в 10 с и
 // вытесняла из кольцевого лога (24 КБ, ~250 строк) реальные события. Замер до
@@ -209,15 +211,30 @@ static void issue_read(void)
 {
     esp_err_t ret = esp_ble_gattc_read_char(s_gattc_if, s_conn_id, s_handles[s_handle_cursor], ESP_GATT_AUTH_REQ_NONE);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "чтение handle 0x%04X отказано, status=%d", s_handles[s_handle_cursor], ret);
+        /* #RADEX-284: отказ API синхронный — ATT-запрос НЕ ушёл, READ_CHAR_EVT не придёт,
+           и 40-секундного разрыва Bluedroid тоже не будет. Раньше здесь был только лог, и
+           s_poll_active оставался 1 навсегда: опрос и журнал стояли при живой связи.
+           Закрываем круг и планируем повтор. */
+        s_read_err++;
+        ESP_LOGE(TAG, "чтение handle 0x%04X не отправлено (%s) — круг закрыт, повтор через %d с",
+                 s_handles[s_handle_cursor], esp_err_to_name(ret), RADEX_POLL_RETRY_MS / 1000);
+        s_handle_cursor = 0;
+        s_next_poll_tick = (xTaskGetTickCount() + pdMS_TO_TICKS(RADEX_POLL_RETRY_MS)) | 1;
+        s_poll_active = 0;
     }
 }
 
 static void start_polling(const char *why)
 {
+    /* #RADEX-284 (B-F6): проверка «круг не идёт» и захват флага атомарно — иначе колбэк
+       UPDATE_CONN_PARAMS_EVT и главный цикл могли запустить две цепочки чтений. */
+    taskENTER_CRITICAL(&s_poll_mux);
+    bool busy = s_poll_active;
+    s_poll_active = 1;
+    taskEXIT_CRITICAL(&s_poll_mux);
+    if (busy) { ESP_LOGW(TAG, "старт опроса (%s) пропущен: круг уже идёт", why); return; }
     s_mtu_state = 1;
     s_handle_cursor = 0;
-    s_poll_active = 1;
     poll_build();      /* каждый круг — своя пара ротируемых величин */
     ESP_LOGI(TAG, "старт опроса (%s)", why);
     issue_read();

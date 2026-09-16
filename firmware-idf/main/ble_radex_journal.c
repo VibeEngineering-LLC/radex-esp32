@@ -66,7 +66,9 @@ static TickType_t       s_t0;                   /* начало паузы ша�
 static TickType_t       s_deadline;
 static radex_j_track_t  s_trk;                  /* под s_mtx: квитанции/notify по шагам */
 static bool             s_last_filler;          /* под s_mtx: последний пакет записей — заглушка */
-static uint16_t         s_want;                 /* записей в запрошенном диапазоне */
+static uint16_t         s_want;                 /* сколько записей брать: min(last, 64) */
+static uint16_t         s_expect_idx;           /* под s_mtx: индекс, который должен прийти следующим */
+static bool             s_rec_done;             /* под s_mtx: набрано want или пришёл индекс 0 */
 static uint16_t         s_next_sent;            /* сколько 82 ff отправлено */
 static uint8_t          s_rec_cmd[RADEX_J_CMD_LEN];   /* 48 этого сеанса */
 static uint32_t         s_sess_gen;             /* поколение соединения, на котором идёт сеанс */
@@ -127,18 +129,19 @@ static void ulk(void) { if (s_mtx) xSemaphoreGive(s_mtx); }
 static int j_next_step(int done_step, const char **why)
 {
     if (done_step == J_S_SUM_END) {
-        uint16_t from, extra; bool tr;
+        uint16_t from; bool tr;
         if (!s_work.have_summary) { *why = "no summary"; return -1; }   /* 48 без сводки не шлём */
-        if (!radex_journal_records_range(s_work.summary.last_record, &from, &extra, &tr)) return J_S_OFF;
-        radex_journal_records_cmd_build(s_rec_cmd, from, extra);
-        s_work.req_from = from; s_work.req_extra = extra; s_work.truncated = tr;
-        s_want = radex_journal_records_want(extra); s_next_sent = 0; s_last_filler = false;
-        ESP_LOGI(TAG, "записи: последняя №%u, запрашиваю 48 start=%u extra=%u (ждём %u)%s", (unsigned)s_work.summary.last_record,
-                 (unsigned)from, (unsigned)extra, (unsigned)s_want, tr ? ", журнал усечён до 64" : "");
+        if (!radex_journal_records_range(s_work.summary.last_record, &from, &s_want, &tr)) return J_S_OFF;
+        radex_journal_records_cmd_build(s_rec_cmd, from);
+        s_work.req_from = from; s_work.truncated = tr;
+        s_expect_idx = from; s_rec_done = false; s_next_sent = 0; s_last_filler = false;
+        ESP_LOGI(TAG, "записи: последняя №%u, 48 from=%u, ждём %u%s", (unsigned)s_work.summary.last_record,
+                 (unsigned)from, (unsigned)s_want, tr ? ", журнал усечён до 64" : "");
         return done_step + 1;
     }
     if (done_step == J_S_REC_NEXT) {
-        if (!radex_journal_records_more(s_work.n_records, s_want, s_last_filler)) return J_S_OFF;
+        /* стоп: заглушка, набрано want, индекс 0 (дальше не наблюдалось) или сбой последовательности */
+        if (s_last_filler || s_rec_done || s_work.seq_mismatch) return J_S_OFF;
         if (s_next_sent >= s_want + 2) { *why = "record loop limit"; return -1; }   /* ни заглушки, ни записей */
         return J_S_REC_NEXT;
     }
@@ -403,8 +406,17 @@ void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_
                 radex_journal_record_t rec;
                 int r = radex_journal_parse_record(param->notify.value, param->notify.value_len, &rec);
                 if (r == RADEX_J_FILLER) s_last_filler = true;
-                if (r == RADEX_J_OK && s_work.n_records < RADEX_J_MAX_REC) {
+                radex_j_seq_t sq = RJ_SEQ_MISMATCH;
+                if (r == RADEX_J_OK && !s_work.seq_mismatch && !s_rec_done)
+                    sq = radex_journal_records_next(s_expect_idx, rec.seq, (uint16_t)(s_work.n_records + 1), s_want);
+                if (r == RADEX_J_OK && sq == RJ_SEQ_MISMATCH) {   /* и повтор записи, и пропуск */
+                    s_work.seq_mismatch = true;
+                    ESP_LOGE(TAG, "индекс записи %u, ожидался %u — стоп (sequence mismatch)",
+                             (unsigned)rec.seq, (unsigned)s_expect_idx);
+                }
+                if (r == RADEX_J_OK && sq != RJ_SEQ_MISMATCH && s_work.n_records < RADEX_J_MAX_REC) {
                     s_work.records[s_work.n_records++] = rec;
+                    if (sq == RJ_SEQ_DONE) s_rec_done = true; else s_expect_idx = (uint16_t)(rec.seq - 1);
                     ESP_LOGI(TAG, "запись №%u: время(сыр.)=%lu ОА=%.2f Бк/м3 T×10=%u RH=%u%%",
                              (unsigned)rec.number, (unsigned long)rec.time_raw, (double)rec.oa,
                              (unsigned)rec.temp_x10, (unsigned)rec.humidity);

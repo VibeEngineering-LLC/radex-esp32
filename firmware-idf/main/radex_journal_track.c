@@ -132,6 +132,10 @@ bool radex_j_final_status(const radex_journal_t *j, const radex_j_track_t *t, ch
         snprintf(st, st_len, "short packet: %u (MTU?)", (unsigned)shorts);
         return false;
     }
+    if (j->seq_mismatch) {   /* записи до сбоя верны, но набор неполон и порядок нарушен */
+        snprintf(st, st_len, "sequence mismatch");
+        return false;
+    }
     if (j->n_records == 0) {
         snprintf(st, st_len, "no records");
         return false;

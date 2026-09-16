@@ -218,32 +218,36 @@ static void test_whitelist_rejects(void) {
 
 /* 48: литерал из перехвата (last=3) и живая плата 16.09 (last=10 -> 9..0) */
 static void test_records_cmd_accepts(void) {
-    const uint8_t cap[8] = {0x48,0x00,0x02,0x00,0x01,0x00,0x00,0x00};
-    const uint8_t live[8] = {0x48,0x00,0x09,0x00,0x00,0x00,0x00,0x00};
+    const uint8_t cap[8] = {0x48,0x00,0x02,0x00,0x01,0x00,0x00,0x00};    /* перехват, last=3 */
+    const uint8_t hci[8] = {0x48,0x00,0x0b,0x00,0x01,0x00,0x00,0x00};    /* HCI-лог, last=12 */
     uint8_t built[8];
     CHECK(radex_journal_records_cmd_ok(cap, 8, 3), "capture literal at last=3");
     CHECK(radex_journal_cmd_allowed_ctx(cap, 8, 3), "capture literal via ctx whitelist");
-    CHECK(radex_journal_records_cmd_ok(live, 8, 10), "(9,0) at last=10");
-    radex_journal_records_cmd_build(built, 9, 0);
-    CHECK(memcmp(built, live, 8) == 0, "build(9,0) == 48 00 09 00 00 00 00 00");
+    CHECK(radex_journal_records_cmd_ok(hci, 8, 12), "48 00 0b 00 01 00 at last=12");
+    radex_journal_records_cmd_build(built, 11);
+    CHECK(memcmp(built, hci, 8) == 0, "build(11) == 48 00 0b 00 01 00 00 00");
     CHECK(radex_journal_cmd_allowed_ctx(RADEX_J_CMD_SUMMARY, 8, 0), "47 without summary still allowed");
 }
 
 /* единственный тест на from < last_record (мишень мутации #SA-3) */
 static void test_records_cmd_from_ge_last(void) {
-    const uint8_t a[8] = {0x48,0x00,0x0a,0x00,0x00,0x00,0x00,0x00};   /* from=10, last=10 */
-    const uint8_t b[8] = {0x48,0x00,0x00,0x00,0x00,0x00,0x00,0x00};   /* from=0, нет сводки */
+    const uint8_t a[8] = {0x48,0x00,0x0a,0x00,0x01,0x00,0x00,0x00};   /* from=10 */
+    const uint8_t b[8] = {0x48,0x00,0x00,0x00,0x01,0x00,0x00,0x00};   /* from=0, нет сводки */
     CHECK(!radex_journal_records_cmd_ok(a, 8, 10), "from == last rejected");
     CHECK(!radex_journal_records_cmd_ok(a, 8, 5), "from > last rejected");
     CHECK(!radex_journal_cmd_allowed_ctx(b, 8, 0), "no summary (last=0) rejected");
 }
 
 static void test_records_cmd_rejects_shape(void) {
-    const uint8_t to_gt[8] = {0x48,0x00,0x02,0x00,0x03,0x00,0x00,0x00};
-    const uint8_t b6[8]    = {0x48,0x00,0x02,0x00,0x01,0x00,0x01,0x00};
-    const uint8_t b7[8]    = {0x48,0x00,0x02,0x00,0x01,0x00,0x00,0x01};
-    const uint8_t b1[8]    = {0x48,0x01,0x02,0x00,0x01,0x00,0x00,0x00};
-    CHECK(!radex_journal_records_cmd_ok(to_gt, 8, 10), "to > from rejected");
+    const uint8_t p00[8] = {0x48,0x00,0x0b,0x00,0x00,0x00,0x00,0x00};   /* второй 00 00 */
+    const uint8_t p0b[8] = {0x48,0x00,0x0b,0x00,0x0b,0x00,0x00,0x00};   /* второй 0b 00 */
+    const uint8_t p5[8]  = {0x48,0x00,0x0b,0x00,0x01,0x01,0x00,0x00};   /* второй 01 01 */
+    const uint8_t b6[8]  = {0x48,0x00,0x02,0x00,0x01,0x00,0x01,0x00};
+    const uint8_t b7[8]  = {0x48,0x00,0x02,0x00,0x01,0x00,0x00,0x01};
+    const uint8_t b1[8]  = {0x48,0x01,0x02,0x00,0x01,0x00,0x00,0x00};
+    CHECK(!radex_journal_records_cmd_ok(p00, 8, 12), "second param 00 00 rejected");
+    CHECK(!radex_journal_records_cmd_ok(p0b, 8, 12), "second param 0b 00 rejected");
+    CHECK(!radex_journal_records_cmd_ok(p5, 8, 12), "second param 01 01 rejected");
     CHECK(!radex_journal_records_cmd_ok(b6, 8, 10), "byte 6 != 0 rejected");
     CHECK(!radex_journal_records_cmd_ok(b7, 8, 10), "byte 7 != 0 rejected");
     CHECK(!radex_journal_records_cmd_ok(b1, 8, 10), "byte 1 != 0 rejected");
@@ -251,31 +255,34 @@ static void test_records_cmd_rejects_shape(void) {
     CHECK(!radex_journal_cmd_allowed_ctx(RADEX_J_CMD_SUMMARY_NEXT, 7, 10), "81 len 7 rejected");
 }
 
-static void test_records_range_more(void) {
-    uint16_t f = 1, t = 1; bool tr = true;
-    /* t = extra (число более старых записей) */
-    CHECK(!radex_journal_records_range(0, &f, &t, &tr), "last=0: no range");
-    CHECK(radex_journal_records_range(11, &f, &t, &tr) && f == 10 && t == 10 && !tr, "last=11 -> start 10, extra 10");
-    CHECK(radex_journal_records_range(1, &f, &t, &tr) && f == 0 && t == 0 && !tr, "last=1 -> start 0, extra 0");
-    CHECK(radex_journal_records_range(64, &f, &t, &tr) && f == 63 && t == 63 && !tr, "last=64 -> extra 63");
-    CHECK(radex_journal_records_range(100, &f, &t, &tr) && f == 99 && t == 63 && tr, "last=100 -> extra 63 truncated");
-    CHECK(radex_journal_records_more(1, 10, false) && !radex_journal_records_more(10, 10, false), "more until want");
-    CHECK(!radex_journal_records_more(1, 10, true), "filler stops");
+static void test_records_range(void) {
+    uint16_t f = 1, w = 1; bool tr = true;
+    CHECK(!radex_journal_records_range(0, &f, &w, &tr), "last=0: no range");
+    CHECK(radex_journal_records_range(12, &f, &w, &tr) && f == 11 && w == 12 && !tr, "last=12 -> from 11, want 12");
+    CHECK(radex_journal_records_range(1, &f, &w, &tr) && f == 0 && w == 1 && !tr, "last=1 -> from 0, want 1");
+    CHECK(radex_journal_records_range(64, &f, &w, &tr) && f == 63 && w == 64 && !tr, "last=64 -> want 64");
+    CHECK(radex_journal_records_range(100, &f, &w, &tr) && f == 99 && w == 64 && tr, "last=100 -> want 64 truncated");
 }
 
-/* второй параметр = extra: (10,10) при last=11 — весь журнал; (10,11) — отказ */
-static void test_records_cmd_extra(void) {
-    const uint8_t all[8] = {0x48,0x00,0x0a,0x00,0x0a,0x00,0x00,0x00};
-    const uint8_t over[8] = {0x48,0x00,0x0a,0x00,0x0b,0x00,0x00,0x00};
-    CHECK(radex_journal_records_cmd_ok(all, 8, 11), "(10,10) at last=11 accepted");
-    CHECK(!radex_journal_records_cmd_ok(over, 8, 11), "(10,11) at last=11 rejected");
+/* HCI-лог, 12 записей: №12 и №11 дословно (u16@0 = индекс записи) */
+static const uint8_t HCI12[24] = {0x0b,0x00,0x00,0x00,0x0c,0x00,0xc1,0xbe,0x3d,0x32,0x55,0x55,0xad,0x42,0x7b,0xf0,0xc4,0x42,0x03,0x01,0x00,0x00,0x2a,0x10};
+static const uint8_t HCI11[24] = {0x0a,0x00,0x00,0x00,0x0b,0x00,0x69,0xbc,0x3d,0x32,0xaa,0xaa,0x9a,0x42,0xdc,0x15,0xc7,0x42,0x04,0x01,0x00,0x00,0x2a,0x10};
+
+/* единственный тест на «индекс = предыдущий - 1» (мишень мутации #SA-3) */
+static void test_records_sequence(void) {
+    radex_journal_record_t a, b;
+    CHECK(radex_journal_parse_record(HCI12, 24, &a) == RADEX_J_OK && a.seq == 11 && a.number == 12, "HCI12: idx 11, No 12");
+    CHECK(radex_journal_parse_record(HCI11, 24, &b) == RADEX_J_OK && b.seq == 10 && b.number == 11, "HCI11: idx 10, No 11");
+    CHECK(radex_journal_records_next(11, a.seq, 1, 12) == RJ_SEQ_MORE, "No12 first after 48 from=11");
+    CHECK(radex_journal_records_next((uint16_t)(a.seq - 1), b.seq, 2, 12) == RJ_SEQ_MORE, "No11 follows No12");
+    CHECK(radex_journal_records_next((uint16_t)(a.seq - 1), a.seq, 2, 12) == RJ_SEQ_MISMATCH, "repeat of No12 caught");
+    CHECK(radex_journal_records_next(11, b.seq, 1, 12) == RJ_SEQ_MISMATCH, "skip to No11 caught");
 }
 
-/* единственный тест на want = extra + 1 (мишень мутации #SA-3); плата: extra 0 -> 1 запись */
-static void test_records_want(void) {
-    CHECK(radex_journal_records_want(0) == 1, "extra 0 -> 1 record (board 16.09)");
-    CHECK(radex_journal_records_want(1) == 2, "extra 1 -> 2 records (phone capture)");
-    CHECK(radex_journal_records_want(63) == 64, "extra 63 -> 64");
+static void test_records_stop(void) {
+    CHECK(radex_journal_records_next(0, 0, 3, 12) == RJ_SEQ_DONE, "index 0 stops even if want not reached");
+    CHECK(radex_journal_records_next(52, 52, 12, 12) == RJ_SEQ_DONE, "want reached stops");
+    CHECK(radex_journal_records_next(5, 5, 11, 12) == RJ_SEQ_MORE, "more before want");
 }
 
 static void test_cccd(void) {
@@ -393,9 +400,9 @@ int main(void) {
     RUN(test_records_cmd_accepts);
     RUN(test_records_cmd_from_ge_last);
     RUN(test_records_cmd_rejects_shape);
-    RUN(test_records_range_more);
-    RUN(test_records_cmd_extra);
-    RUN(test_records_want);
+    RUN(test_records_range);
+    RUN(test_records_sequence);
+    RUN(test_records_stop);
     RUN(test_json_capacity_64);
 
     printf("итого: красных тестов %d из %d\n", g_fail_tests, g_total_tests);

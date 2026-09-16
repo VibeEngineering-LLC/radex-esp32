@@ -29,10 +29,9 @@ bool radex_journal_records_cmd_ok(const uint8_t *cmd, size_t len, uint16_t last_
 {
     if (cmd == NULL || len != RADEX_J_CMD_LEN) return false;
     if (cmd[0] != 0x48 || cmd[1] != 0x00 || cmd[6] != 0x00 || cmd[7] != 0x00) return false;
+    if (cmd[4] != 0x01 || cmd[5] != 0x00) return false;   /* второй параметр — всегда 01 00 (HCI-лог) */
     uint16_t from = (uint16_t)(cmd[2] | (cmd[3] << 8));
-    uint16_t to   = (uint16_t)(cmd[4] | (cmd[5] << 8));
     if (from >= last_record) return false;   /* индекс вне журнала этого сеанса (и нет сводки) */
-    if (to > from) return false;
     return true;
 }
 
@@ -46,30 +45,27 @@ bool radex_journal_cmd_allowed_ctx(const uint8_t *cmd, size_t len, uint16_t last
 const uint8_t RADEX_J_CCCD_ON[2]  = {0x01, 0x00};
 const uint8_t RADEX_J_CCCD_OFF[2] = {0x00, 0x00};
 
-bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *extra, bool *truncated)
+bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *want, bool *truncated)
 {
-    if (last_record == 0 || !from || !extra || !truncated) return false;
+    if (last_record == 0 || !from || !want || !truncated) return false;
     *from = (uint16_t)(last_record - 1);
     *truncated = last_record > RADEX_J_MAX_REC;
-    *extra = *truncated ? (uint16_t)(RADEX_J_MAX_REC - 1) : *from;
+    *want = *truncated ? (uint16_t)RADEX_J_MAX_REC : last_record;
     return true;
 }
 
-uint16_t radex_journal_records_want(uint16_t extra)
-{
-    return (uint16_t)(extra + 1);   /* запрошенная запись + extra более старых */
-}
-
-void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from, uint16_t extra)
+void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from)
 {
     const uint8_t b[RADEX_J_CMD_LEN] = { 0x48, 0x00, (uint8_t)from, (uint8_t)(from >> 8),
-                                         (uint8_t)extra, (uint8_t)(extra >> 8), 0x00, 0x00 };
+                                         0x01, 0x00, 0x00, 0x00 };
     memcpy(out, b, RADEX_J_CMD_LEN);
 }
 
-bool radex_journal_records_more(uint16_t got, uint16_t want, bool last_was_filler)
+radex_j_seq_t radex_journal_records_next(uint16_t expected_idx, uint16_t pkt_idx, uint16_t got, uint16_t want)
 {
-    return !last_was_filler && got < want;
+    if (pkt_idx != expected_idx) return RJ_SEQ_MISMATCH;   /* пропуск или повтор записи */
+    if (got >= want || pkt_idx == 0) return RJ_SEQ_DONE;
+    return RJ_SEQ_MORE;
 }
 
 bool radex_journal_cccd_allowed(const uint8_t *val, size_t len)
@@ -201,8 +197,8 @@ int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *
     st[st_len] = '\0';
     if (!app(buf, len, &o, ",\"status\":\"%s\",\"finished_s\":%lu,\"mtu\":%u", st,
              (unsigned long)j->finished_s, (unsigned)j->mtu)) return -1;
-    if (!app(buf, len, &o, ",\"req_from\":%u,\"req_extra\":%u,\"truncated\":%s", (unsigned)j->req_from,
-             (unsigned)j->req_extra, j->truncated ? "true" : "false")) return -1;
+    if (!app(buf, len, &o, ",\"req_from\":%u,\"truncated\":%s,\"seq_mismatch\":%s", (unsigned)j->req_from,
+             j->truncated ? "true" : "false", j->seq_mismatch ? "true" : "false")) return -1;
 
     if (!app(buf, len, &o, ",\"summary\":")) return -1;
     if (!j->have_summary) {

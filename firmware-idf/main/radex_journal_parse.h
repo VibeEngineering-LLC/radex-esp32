@@ -25,23 +25,22 @@ extern const uint8_t RADEX_J_CMD_RECORDS_NEXT[RADEX_J_CMD_LEN];  // 82 ff 00 ..
 // true — только если (cmd,len) побайтно равен одной из четырёх команд выше.
 bool radex_journal_cmd_allowed(const uint8_t *cmd, size_t len);
 
-// Команда записей: 48 00 <from u16> <второй u16> 00 00 (смысл второго — см. records_range ниже).
-// Годна только при len == 8, байтах 1/6/7 == 0, from < last_record ЭТОГО сеанса и второй <= from.
-// last_record == 0 (нет сводки) — всегда отказ.
+// Команда записей (HCI-лог телефона, 12 записей): 48 00 <from u16> 01 00 00 00, from = last-1 (raw2 сводки);
+// далее каждый 82 ff отдаёт следующую запись ПО УБЫВАНИЮ, u16@0 пакета = индекс записи (номер-1).
+// Годна только в этой точной форме и при from < last_record ЭТОГО сеанса; без сводки (last=0) — отказ.
 bool radex_journal_records_cmd_ok(const uint8_t *cmd, size_t len, uint16_t last_record);
 // Белый список отправки: 47 / 81 ff / 82 ff дословно, 48 — через records_cmd_ok.
 bool radex_journal_cmd_allowed_ctx(const uint8_t *cmd, size_t len, uint16_t last_record);
 #define RADEX_J_MAX_REC 64   // жёсткий предел записей за сеанс
-// Трактовка (плата 16.09, вторая гипотеза): 48 00 <start_idx> <extra> 00 00 отдаёт extra+1 записей,
-// от №start_idx+1 к более старым. Перехват 02/01 -> №3,№2; плата 0a/00 при last=11 -> №11.
-// Весь журнал: from = last-1, extra = from; длиннее 64 — extra = 63 и *truncated.
-// false, если last_record == 0 (записей нет). Валидатор (второй <= from) годен и для extra.
-bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *extra, bool *truncated);
-// Сколько записей ждать на 48 с данным extra.
-uint16_t radex_journal_records_want(uint16_t extra);
-void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from, uint16_t extra);
-// Продолжать 82 ff: пока не пришла заглушка и записей меньше want.
-bool radex_journal_records_more(uint16_t got, uint16_t want, bool last_was_filler);
+// from = last-1, want = min(last, 64); last > 64 — последние 64 и *truncated. false при last == 0.
+bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *want, bool *truncated);
+void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from);
+// Разбор очередного пакета записи: ожидаемый индекс (первый = from, далее предыдущий-1),
+// индекс из пакета, сколько записей будет с этой, сколько нужно.
+typedef enum { RJ_SEQ_MISMATCH = 0, RJ_SEQ_MORE = 1, RJ_SEQ_DONE = 2 } radex_j_seq_t;
+// MISMATCH — индекс не тот (в т.ч. повтор записи): стоп без повторов. DONE — набрали want или
+// дошли до индекса 0 (что прибор делает дальше, не наблюдалось: 82 ff больше не шлём).
+radex_j_seq_t radex_journal_records_next(uint16_t expected_idx, uint16_t pkt_idx, uint16_t got, uint16_t want);
 // Значения CCCD 0x0013: включить notify в начале сеанса, выключить в конце (аудит 281-B F7).
 extern const uint8_t RADEX_J_CCCD_ON[2];    // 01 00
 extern const uint8_t RADEX_J_CCCD_OFF[2];   // 00 00
@@ -109,7 +108,8 @@ typedef struct {
     radex_journal_summary_t summary;
     uint8_t  n_summary_pkt;
     radex_journal_raw_t summary_pkt[RADEX_J_MAX_PKT];
-    uint16_t req_from, req_extra;   // параметры 0x48: индекс начала и число более старых
+    uint16_t req_from;           // индекс начала в 0x48 (= last-1)
+    bool     seq_mismatch;       // индекс пакета записи не равен ожидаемому
     bool     truncated;          // журнал длиннее RADEX_J_MAX_REC
     uint8_t  n_records;
     radex_journal_record_t records[RADEX_J_MAX_REC];

@@ -18,5 +18,13 @@ for (const [name, tests, want] of cases) {
   if (!ok) fail++;
   console.log(`${ok ? 'GREEN' : 'RED  '} ${name}: from=${got.from} label="${got.label}"`);
 }
-console.log(`итого (js): красных ${fail} из ${cases.length}`);
+// #RADEX-286: история содержит точки ДО start — среднее и число измерений только по точкам после start
+const hb = src.match(/function historyPointsSince\([\s\S]*?function historyWeightedMean\([\s\S]*?\n}/);
+const H = hb ? new Function(hb[0] + '; return {historyPointsSince, historyMeasurements, historyWeightedMean};')() : null;
+const hist = [{t: 1788000000, r: 300, w: 60}, {t: 1789589000, r: 200}, {t: 1789590000, r: 100}, {t: 1789590600, r: 120, w: 3}];
+const since = H ? H.historyPointsSince(hist, 1789590000) : [];
+const hOk = !!H && since.length === 2 && H.historyMeasurements(since) === 4 && H.historyWeightedMean(since) === 115;
+if (!hOk) fail++;
+console.log(`${hOk ? 'GREEN' : 'RED  '} история с точками до start: точек=${since.length} измерений=${H ? H.historyMeasurements(since) : '-'} среднее=${H ? H.historyWeightedMean(since) : '-'}`);
+console.log(`итого (js): красных ${fail} из ${cases.length + 1}`);
 process.exit(fail);

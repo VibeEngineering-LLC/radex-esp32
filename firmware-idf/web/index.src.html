@@ -681,7 +681,7 @@
             имя файла: <code>radon-history.csv</code></div>
         </div>
         <div class="btn-row">
-          <a href="/api/export.csv" download id="export-link" class="btn-download">Скачать историю (CSV)</a>
+          <a href="/api/export.csv" download id="export-link" class="btn-download">Скачать всю историю платы (CSV)</a>
           <button type="button" id="show-log-btn">Показать лог платы</button>
           <!-- #RADEX-105, оператор: «должен быть импорт лога с префиксом и
                сброс». «Импорт» здесь читаем как «выгрузка», симметрично CSV:
@@ -1438,7 +1438,8 @@
   try {
     const response = await fetch(url, { cache: 'no-store' });
     const data = await response.json();
-    history = { points: data.points };
+    /* #RADEX-286: плата уже отсекла по from; фильтр здесь — вторая линия того же правила */
+    history = { points: historyPointsSince(data.points, from), total: data.total, from: from };
     drawChart();
     updateChartNote();
   } catch (error) {
@@ -1464,7 +1465,25 @@ function updateChartNote() {
      бы прямой неправдой о собственных данных. */
   note.textContent = pts.length === 0
     ? 'данных пока нет — первая точка появится, когда прибор пересчитает значение'
-    : 'Количество измерений: ' + pts.length + medianStepNote(pts) + testSpanNote(pts);
+    : (mainHistoryLabel === 'вся история платы' ? 'вся история платы · ' : '')
+      /* #RADEX-286: измерений, а не строк ответа — после уплотнения строка несёт w измерений,
+         а при прореживании (max=300) строк меньше; total считает плата по всему интервалу */
+      + 'Количество измерений: ' + ((history && history.total > 0) ? history.total : historyMeasurements(pts))
+      + medianStepNote(pts) + testSpanNote(pts);
+}
+
+/* #RADEX-286, оператор: «на главной тоже есть старые замеры». Расчёты вкладки
+   «Результаты измерений» — чистые функции (node test/host/test_current_session.js). */
+let mainHistoryLabel = '';
+function historyPointsSince(points, from) {
+  return (Array.isArray(points) ? points : []).filter(p => p && typeof p.t === 'number' && p.t >= from);
+}
+function historyWeight(p) { return (p && typeof p.w === 'number' && p.w > 0) ? p.w : 1; }
+function historyMeasurements(points) { return points.reduce((s, p) => s + historyWeight(p), 0); }
+function historyWeightedMean(points) {
+  let sum = 0, ws = 0;
+  for (const p of points) { if (p && p.r !== null && isFinite(p.r)) { sum += p.r * historyWeight(p); ws += historyWeight(p); } }
+  return ws > 0 ? sum / ws : null;
 }
 
 /* #RADEX-196: фактический шаг ряда — МЕДИАНА разностей меток времени показанных
@@ -1602,15 +1621,14 @@ window.gotoMethod = gotoMethod;
    Кнопок больше нет, осталась одна задача — загрузить историю целиком; отсюда
    и новое имя. Пустой querySelectorAll и подсветка активной кнопки удалены как
    мёртвый код. */
-function loadInitialHistory() {
-
-  /* Обработчик произвольного интервала убран вместе с разметкой (#RADEX-93).
-     Оставить его нельзя: getElementById вернул бы null, и addEventListener
-     уронил бы весь скрипт страницы, а не только этот блок. */
-
-  /* #RADEX-194: грузим ВСЮ историю — окно графика больше не выбирается. Выбор
-     интервала остался на «Графиках», это её штатный инструмент. */
-  loadHistoryRange(0, 0);
+async function loadInitialHistory() {
+  /* #RADEX-286: с начала ИДУЩЕГО замера (та же currentSessionFrom, что у «Графиков»),
+     а не вся история флеш: иначе среднее и число измерений смешивали прежние замеры. */
+  if (!testsCacheLoaded && typeof multiLoadTestsList === 'function') await multiLoadTestsList();
+  const cs = currentSessionFrom(testsCache, Math.floor(Date.now() / 1000));
+  mainHistoryLabel = cs.label;
+  loadHistoryRange(cs.from, 0);
+  /* #RADEX-194: окно графика здесь не выбирается; произвольный интервал — на «Графиках». */
 }
 
 /* Цвета графика берутся из тех же токенов темы, что и вся страница. Раньше они
@@ -1956,14 +1974,10 @@ function drawMeanLine(ctx, points, geom, colors, opts) {
      «Всему времени» расходилось бы с тем, что плата отдаёт в /api/stats, и
      ошибка была бы тем больше, чем старше данные. Старая плата поля w не
      отдаёт — тогда вес 1, то есть прежнее поведение. */
-  const wOf = p => (typeof p.w === 'number' && p.w > 0) ? p.w : 1;
-  let sum = 0, wsum = 0;
-  for (const point of validPoints) {
-    const w = wOf(point);
-    sum += point.r * w;
-    wsum += w;
-  }
-  const mean = sum / wsum;
+  /* #RADEX-286: расчёт вынесен в чистые функции, тестируемые в node */
+  const wOf = historyWeight;
+  const wsum = historyMeasurements(validPoints);
+  const mean = historyWeightedMean(validPoints);
 
   // Статистическая погрешность: стандартное отклонение выборки, делённое на корень из n,
   // затем нормированное на среднее значение
@@ -2868,6 +2882,11 @@ async function multiLoadTestsList() {
   if (series.some(s => s.name === 'текущая сессия') && typeof window.multiAddBoardHistory === 'function'
       && currentSessionFrom(testsCache, Math.floor(Date.now() / 1000)).from !== boardSessionFrom) {
     window.multiAddBoardHistory();
+  }
+  /* #RADEX-286: то же для «Результатов измерений» */
+  if (typeof history === 'object' && history && typeof history.from === 'number'
+      && currentSessionFrom(testsCache, Math.floor(Date.now() / 1000)).from !== history.from) {
+    loadInitialHistory();
   }
 }
 

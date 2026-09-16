@@ -11,6 +11,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>   /* sqrt в критерии (1) методики */
+#include "radon_method.h"   /* #RADEX-271: порог правила §7.1.2 — 10 месяцев */
 #include <sys/stat.h>
 #include <esp_spiffs.h>
 #include <esp_timer.h>   /* #RADEX-113: относительные метки до синхронизации */
@@ -165,7 +166,8 @@ int radon_stats_method_tables_json(char *buf, size_t len)
                       restricted_ventilation[i].days, restricted_ventilation[i].uv);
         if (n < 0 || n >= (int)len) return -1;
     }
-    n += snprintf(buf + n, len - n, "]}");
+    /* #RADEX-271: порог правила §7.1.2 отдаётся странице — своей копии числа у неё нет */
+    n += snprintf(buf + n, len - n, "],\"rule_days\":%d}", RADON_RULE_DAYS);
     if (n < 0 || n >= (int)len) return -1;
     return n;
 }
@@ -674,7 +676,7 @@ static void radon_stats_assess_src_locked(const char *src, time_t from, time_t t
     // Принимаем решение
     if (comply) {
         out->verdict = RADON_VERDICT_COMPLIES;
-    } else if (exceed || days >= 270) {
+    } else if (exceed || (days > 0 && radon_rule_months_reached((uint32_t)days))) {   /* #RADEX-271: 10 мес., было 270 сут */
         out->verdict = RADON_VERDICT_EXCEEDS;
     } else {
         out->verdict = RADON_VERDICT_UNCERTAIN;

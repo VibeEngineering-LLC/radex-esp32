@@ -26,5 +26,18 @@ const since = H ? H.historyPointsSince(hist, 1789590000) : [];
 const hOk = !!H && since.length === 2 && H.historyMeasurements(since) === 4 && H.historyWeightedMean(since) === 115;
 if (!hOk) fail++;
 console.log(`${hOk ? 'GREEN' : 'RED  '} история с точками до start: точек=${since.length} измерений=${H ? H.historyMeasurements(since) : '-'} среднее=${H ? H.historyWeightedMean(since) : '-'}`);
-console.log(`итого (js): красных ${fail} из ${cases.length + 1}`);
+// #RADEX-268/271: числа и формулировки из документа Цапалова 2 (п.2, п.5)
+const fn = name => new Function(src.match(new RegExp('function ' + name + '\\([\\s\\S]*?\\n}'))[0] + '; return ' + name + ';')();
+const annualRange = fn('annualRange'), concl = fn('methodConclusionLines');
+const rg = annualRange({verdict: 'exceeds', c: 326, crit1: 425});
+const t = [
+  ['диапазон 326 ± 99, границы 227…425', rg && rg.half === 99 && rg.lower === 227 && rg.upper === 425],
+  ['нижняя граница не менее 0', annualRange({verdict: 'uncertain', c: 50, crit1: 130}).lower === 0],
+  ['итог п.5 при 341 сут (дословно)', JSON.stringify(concl({verdict: 'exceeds', days: 341, kp: 1.05, crit2: 250, c_rl: 200, restricted: false}, 300).lines)
+     === JSON.stringify(['1. Критерий (1) не выполнен при продолжительности теста более 10* месяцев,', '2. Критерий (2) выполнен,', 'Поэтому помещение не соответствует нормативу, согласно §7.1.2.'])],
+  ['297 сут (9,9 мес) — без «более 10 месяцев» и сноски', (c => !c.lines[0].includes('10*') && c.note === '')(concl({verdict: 'uncertain', days: 297, kp: 1.1, crit2: 150, c_rl: 200}, 300))],
+  ['300 сут (10,0 мес) — со сноской', concl({verdict: 'exceeds', days: 300, kp: 1.09, crit2: 150, c_rl: 200}, 300).note.startsWith('*целесообразно')],
+];
+for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }
+console.log(`итого (js): красных ${fail} из ${cases.length + 1 + t.length}`);
 process.exit(fail);

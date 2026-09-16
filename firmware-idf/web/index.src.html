@@ -15,7 +15,7 @@
         <!-- Два варианта подписи: на узком экране пять полных названий не помещаются
              и строка вкладок начинает переноситься. Переключает CSS (.t-short/.t-long). -->
         <li class="tab" role="tab" aria-selected="true" data-tab="data"><span class="t-long">Результаты измерений</span><span class="t-short">Данные</span></li>
-        <li class="tab" role="tab" aria-selected="false" data-tab="method"><span class="t-long">Заключение</span><span class="t-short">Заключение</span></li>
+        <li class="tab" role="tab" aria-selected="false" data-tab="method"><span class="t-long">Результат теста</span><span class="t-short">Результат</span></li><!-- #RADEX-270, Цапалов п.4 -->
         <!-- #RADEX-210, оператор 03.09: «Сделать отдельную вкладку “метод”».
              Стоит сразу за «Соответствием»: с той вкладки на неё ведёт кнопка
              «Важно ознакомиться перед началом тестов», и порядок чтения выходит
@@ -84,6 +84,15 @@
         </div>
       </div>
 
+      <!-- #RADEX-268, Цапалов п.2: количественные данные таблицей. Числа — с платы
+           (/api/stats assess) и из уже посчитанного на странице; новых формул нет. -->
+      <div class="card" style="overflow-x:auto">
+        <table id="results-table">
+          <thead><tr><th>Параметр</th><th>Объемная активность (ОА) радона, Бк/м³</th><th>Температура, °C</th><th>Влажность, %</th></tr></thead>
+          <tbody id="results-table-body"></tbody>
+        </table>
+      </div>
+
       <div class="chart-container">
         <!-- #RADEX-110, оператор: «убери кнопки радон/температура/влажность с
              показаний, перенеси на графики, разреши включать одновременно».
@@ -127,6 +136,9 @@
                названия» — легенда называет величины так же, как карточки. -->
           <span class="lg-data">Текущая ОА радона</span>
           <span class="lg-mean">Средняя ОА радона</span>
+          <!-- #RADEX-269, Цапалов п.3: фиолетовым рисуются ДВЕ линии — горизонталь средней
+               (drawMeanLine) и сходящаяся верхняя граница ДИ (confBand.upper); подписаны обе -->
+          <span class="lg-mean">Верхняя граница доверительного интервала среднегодовой ОА радона</span>
           <span class="lg-limit">Норматив</span>
         </div>
           <div class="sub" id="chart_note" style="font-size:var(--fs-xs);margin-top:8px"></div>
@@ -144,7 +156,7 @@
                Узлы удалены, а не спрятаны стилем: applyAssess() проверяет
                наличие каждого перед записью. -->
           <div class="text" id="assessment-text">Данных пока недостаточно для оценки</div>
-          <div class="meta" id="assessment-hint" style="margin-top:6px">Закладка «Заключение» содержит более подробную информацию</div>
+          <div class="meta" id="assessment-hint" style="margin-top:6px">Закладка «Результат теста» содержит более подробную информацию</div>
         </div>
       </div>
 
@@ -244,11 +256,11 @@
          отдельным реестром на плате (/data/labels.csv) и показывается в списке
          «Сохранённые замеры» на «Графиках». -->
     <input type="text" id="test-label" maxlength="24"
-           placeholder="имя замера, например kvartira-1" aria-label="имя текущего замера">
-    <button type="button" id="btn-test-save">Сохранить замер</button>
+           placeholder="имя замера, например Спальня 1" aria-label="имя текущего замера"><!-- #RADEX-274 -->
+    <button type="button" id="btn-test-save">Сохранить</button><!-- #RADEX-275 -->
   </div>
   <div class="sub" id="test-label-note" style="font-size:var(--fs-xs);margin-top:6px">
-    латиница, цифры, дефис и подчёркивание; имя видно в списке «Сохранённые замеры»</div>
+    латиница, цифры, дефис и подчёркивание; имя видно в списке «Предыдущие тесты»</div><!-- #RADEX-276 -->
 
   <!-- #RADEX-227, оператор: «оценку по архивным записям перенеси на вкладку
        графики. Эта оценка будет выводиться по выбранным файлам и не будет
@@ -258,7 +270,7 @@
   </div>
 
     <div class="card method-params">
-<h2 class="section-title">Параметры рационального критерия оценки соответствия</h2>
+<h2 class="section-title">Задаваемые параметры</h2><!-- #RADEX-277, Цапалов п.11 -->
       <form id="assessment-form">
 <div class="assess-grid">
         <div class="form-group">
@@ -269,9 +281,10 @@
                что показывает монитор; российские планки заданы по ЭРОА и здесь
                уже удвоены (200 ЭРОА ↔ 400 ОА). -->
           <select id="normative">
-            <option value="200">200 Бк/м³ — РФ, новые и реконструированные здания</option>
-            <option value="400">400 Бк/м³ — РФ, эксплуатируемые здания</option>
-            <option value="148">148 Бк/м³ — США, US EPA action level (4 pCi/L)</option>
+            <!-- #RADEX-278, Цапалов п.12 + оператор 16.09 «убери»: норматив США удалён
+                 (отменяет #RADEX-253), «РФ» из подписей убрано -->
+            <option value="200">200 Бк/м³ — новые и реконструированные здания</option>
+            <option value="400">400 Бк/м³ — эксплуатируемые здания</option>
           </select>
           <!-- #RADEX-79, формулировка оператора дословно. Планки НРБ заданы по ЭРОА
                (вдвое меньшими числами) — без этой оговорки читатель, сверяясь с
@@ -334,7 +347,8 @@
                  не рекомендуется» — слишком неопределённая рекомендация, про
                  инструментальную неопределённость мониторов радона пока мало
                  известно даже производителям. -->
-            <div class="sub" style="font-size:var(--fs-xs);margin-top:4px">Рекомендуется задавать 30 %, а лучше более консервативное значение 40 %, если на экране монитора не отображается неопределенность (или погрешность в абсолютных единицах) измеряемой ОА радона, которая должна учитывать статистическую и систематическую (калибровочную) компоненты, согласно положениям Рационального Метода. <a href="#" onclick="gotoMethod('m-params');return false">Подробнее</a></div>
+            <!-- #RADEX-279, Цапалов п.13: текст по документу; умолчание 30 % не менялось -->
+            <div class="sub" style="font-size:var(--fs-xs);margin-top:4px">Рекомендуется задавать консервативное значение 40 %, если на экране монитора не отображается неопределенность (или погрешность в абсолютных единицах) измеряемой ОА радона, которая должна учитывать статистическую и систематическую (калибровочную) компоненты, согласно положениям Рационального Метода. <a href="#" onclick="gotoMethod('m-params');return false">Подробнее</a></div>
           </div>
         </div>
         <div class="form-group">
@@ -391,7 +405,7 @@
          и остаётся единственным местом, где эти тексты живут. -->
     <div id="rational-content" class="tab-content" aria-hidden="true">
       <h1 class="page-title">Рациональный Метод тестирования радона в зданиях</h1>
-      <div class="sub" style="margin-bottom:var(--sp-4)">Ознакомьтесь до начала теста: выбор помещения, место установки прибора и режим вентиляции влияют на результат сильнее, чем сам прибор.</div>
+      <div class="sub" style="margin-bottom:var(--sp-4)">Важно ознакомиться с основными положениями и условиями проведения теста до его начала</div><!-- #RADEX-280, Цапалов п.14 -->
 
       <div class="card">
         <h2 class="section-title" id="m-osn">Основные положения</h2>
@@ -459,9 +473,9 @@
         </div>
         <div class="note">
           <div class="note-head">Инструментальная неопределённость, % (k=2)</div>
-          <div class="sub">Рекомендуется задавать 30 %, а лучше более консервативное значение 40 %, если на экране монитора не отображается неопределенность (или погрешность в абсолютных единицах) измеряемой ОА радона, которая должна учитывать статистическую и систематическую (калибровочную) компоненты, согласно положениям Рационального Метода.</div>
+          <div class="sub">Рекомендуется задавать консервативное значение 40 %, если на экране монитора не отображается неопределенность (или погрешность в абсолютных единицах) измеряемой ОА радона, которая должна учитывать статистическую и систематическую (калибровочную) компоненты, согласно положениям Рационального Метода.</div>
         </div>
-        <div class="sub" style="margin-top:var(--sp-3)">Оба параметра задаются на вкладке «Заключение», в блоке «Параметры рационального критерия оценки соответствия».</div>
+        <div class="sub" style="margin-top:var(--sp-3)">Оба параметра задаются на вкладке «Результат теста», в блоке «Задаваемые параметры».</div>
       </div>
 
       <div class="card">
@@ -1470,6 +1484,7 @@ function updateChartNote() {
          а при прореживании (max=300) строк меньше; total считает плата по всему интервалу */
       + 'Количество измерений: ' + ((history && history.total > 0) ? history.total : historyMeasurements(pts))
       + medianStepNote(pts) + testSpanNote(pts);
+  renderResultsTable();   /* #RADEX-268 */
 }
 
 /* #RADEX-286, оператор: «на главной тоже есть старые замеры». Расчёты вкладки
@@ -1493,15 +1508,56 @@ function historyWeightedMean(points) {
    другой функции (недоступна снаружи) и даёт другой формат — «21 сут 5 ч» без
    месяцев. Поэтому здесь два коротких собственных форматтера, оба на верхнем
    уровне; formatSpanMDH ниже нужен и карточке заключения (#RADEX-199). */
-function medianStepNote(pts) {
+function medianStepSec(pts) {   /* #RADEX-268: число нужно и таблице результатов */
   const d = [];
   for (let i = 1; i < pts.length; i++) {
     const dt = pts[i].t - pts[i - 1].t;
     if (dt > 0) d.push(dt);
   }
-  if (!d.length) return '';
+  if (!d.length) return 0;
   d.sort((a, b) => a - b);
-  return ' · Интервал между измерениями: ' + formatStepShort(d[Math.floor(d.length / 2)]);
+  return d[Math.floor(d.length / 2)];
+}
+function medianStepNote(pts) {
+  const s = medianStepSec(pts);
+  return s > 0 ? ' · Интервал между измерениями: ' + formatStepShort(s) : '';
+}
+
+/* #RADEX-268: среднегодовой диапазон из ответа платы. crit1 = C·[1 + √(U_V² + U_И²)]
+   (radon_stats.c, критерий (1)) и есть верхняя граница; полуширина = crit1 − C — та же,
+   что «± N» карточки (bandHalfWidth). Чистая функция (node test/host/test_current_session.js). */
+/* #RADEX-268, Цапалов п.2: строки таблицы количественных данных. */
+let pageMeanValue = null;   /* среднее, посчитанное drawMeanLine (showMeanCard) */
+function resultsTableData() {
+  const a = (typeof stats === 'object' && stats && stats.assess) ? stats.assess : {};
+  const pts = (typeof history === 'object' && history && history.points) ? history.points : [];
+  const st = (stats && stats.test) ? stats.test.start : 0;
+  const last = pts.length ? pts[pts.length - 1].t : 0;
+  const span = (st > 0 && last > st) ? last - st : 0, step = medianStepSec(pts), rg = annualRange(a);
+  const txt = id => (document.getElementById(id) || {}).textContent || '—';
+  const r = x => (x === null || x === undefined || !isFinite(x)) ? '—' : String(Math.round(x));
+  return [
+    ['Текущее значение', txt('radon-last'), txt('temperature'), txt('humidity')],
+    ['Среднее значение', r(pageMeanValue)],
+    ['Среднегодовой диапазон (оценка)', rg ? `${r(rg.center)} ± ${r(rg.half)}` : '—'],
+    ['Нижняя граница диапазона', rg ? `${r(rg.lower)} (не менее 0)` : '—'],
+    ['Верхняя граница диапазона', rg ? r(rg.upper) : '—'],
+    ['Нормативный уровень', r(a.c_rl)],
+    ['Продолжительность теста', span > 0 ? `${a.days > 0 ? a.days : Math.floor(span / 86400)} сут (${formatSpanMDH(span)})` : '—'],
+    ['Начало теста', st > 0 ? new Date(st * 1000).toLocaleString('ru-RU', {dateStyle: 'short', timeStyle: 'short'}) : '—'],
+    ['Количество измерений', (history && history.total > 0) ? String(history.total) : String(historyMeasurements(pts))],
+    ['Интервал измерений', step > 0 ? formatStepShort(step) : '—']];
+}
+function renderResultsTable() {
+  const body = document.getElementById('results-table-body');
+  if (!body) return;
+  body.innerHTML = resultsTableData().map(row =>
+    '<tr>' + [0, 1, 2, 3].map(i => `<td>${row[i] === undefined ? '' : row[i]}</td>`).join('') + '</tr>').join('');
+}
+function annualRange(a) {
+  if (!a || a.verdict === 'too_short' || !(a.c > 0) || !(a.crit1 > 0)) return null;
+  const half = a.crit1 - a.c;
+  return { center: a.c, half: half, lower: Math.max(0, a.c - half), upper: a.crit1 };
 }
 
 /* #RADEX-194, Цапалов (3): «целесообразно выводить всего лишь продолжительность
@@ -1544,6 +1600,29 @@ function uvKpFor(days, restricted, tables) {
 /* Полуширина доверительного интервала — тот самый корень из формулы критерия:
    crit1 = c·(1 + √(UV² + U_D²)). Одна функция на график и на карточку, чтобы
    число в подписи и граница на графике не могли разойтись. */
+/* #RADEX-271: порог правила §7.1.2 в сутках — с платы (/api/method/tables rule_days);
+   300 = 10 мес. — только пока таблицы не пришли (radon_method.h RADON_RULE_DAYS). */
+function methodRuleDays() {
+  return (typeof methodTables === 'object' && methodTables && methodTables.rule_days > 0) ? methodTables.rule_days : 300;
+}
+/* #RADEX-271, Цапалов п.5: итог «Расчёта по методике» формулировкой автора. Чистая функция
+   (node test/host/test_current_session.js). */
+function methodConclusionLines(a, ruleDays) {
+  const months = Math.round(ruleDays / 30);
+  const crit2ok = a.kp > 0 && !a.restricted && a.crit2 > a.c_rl;
+  const long = a.days >= ruleDays;
+  if (a.verdict === 'complies') {
+    return { lines: ['1. Критерий (1) выполнен,', 'Поэтому помещение соответствует нормативу, согласно §7.1.1.'], note: '' };
+  }
+  if (a.verdict !== 'exceeds' && a.verdict !== 'uncertain') return { lines: [], note: '' };
+  return {
+    lines: ['1. Критерий (1) не выполнен' + (long ? ` при продолжительности теста более ${months}* месяцев,` : ','),
+            `2. Критерий (2) ${crit2ok ? 'выполнен' : 'не выполнен'},`,
+            a.verdict === 'exceeds' ? 'Поэтому помещение не соответствует нормативу, согласно §7.1.2.'
+              : 'Решение не принято — требуется продолжить измерение либо снизить концентрацию (§7.1.3).'],
+    note: long ? `*целесообразно (более надежно) применять критерий ${months} месяцев, вместо 9 месяцев.` : ''
+  };
+}
 function bandHalfWidth(uv, uD) {
   return Math.sqrt(uv * uv + uD * uD);
 }
@@ -1760,6 +1839,8 @@ function showMeanCard(mean, absError, U) {
   const cur = parseFloat((document.getElementById('radon-last') || {}).textContent) || null;
   const norm = (stats && stats.assess && stats.assess.c_rl) ? stats.assess.c_rl : 0;
   updateRadonGauge(cur, mean, mean === null ? null : absError, norm);
+  pageMeanValue = mean;     /* #RADEX-268: то же число — в таблицу результатов */
+  renderResultsTable();
   if (!v) return;
   const unit = document.getElementById('radon-mean-unit');
   if (mean === null) {
@@ -4210,8 +4291,9 @@ function updateAnnualCard(a) {
   if (u) { u.style.color = col; u.style.fontWeight = '700'; }
   if (unit) { unit.style.color = col; unit.style.fontWeight = '700'; }
   if (note) {
+    /* #RADEX-267, Цапалов п.1: подпись про неопределённости периода и прибора убрана — «непонятно» */
     note.textContent = hasBand
-      ? `неопределённость периода ${a.uv.toFixed(2)} и прибора ${Math.round(uD * 100)} % — интервал сужается по мере теста`
+      ? ''
       : (a && a.verdict === 'too_short'
           ? 'интервал появится, когда тест достигнет минимальной длительности'
           : '');
@@ -4287,6 +4369,17 @@ function verdictFacts(a) {
     }
   }
   if (a.c > 0) rows.push('Средняя ОА радона: ' + Math.round(a.c) + ' Бк/м³');
+  /* #RADEX-270, Цапалов п.4. Верхняя граница ДИ = crit1 платы: C·[1 + √(U_V² + U_И²)]
+     (radon_stats.c, критерий (1)); U_V и K_p — табличные значения из ответа платы. */
+  const tabled = a.verdict !== 'too_short' && a.days > 0;
+  if (tabled && a.crit1 > 0) rows.push('Верхняя граница доверительного интервала среднегодовой ОА радона: ' + Math.round(a.crit1) + ' Бк/м³');
+  if (a.c_rl > 0) rows.push('Нормативный уровень: ' + Math.round(a.c_rl) + ' Бк/м³');
+  const udShown = a.u_d_eff > 0 ? a.u_d_eff : a.u_d;
+  if (udShown > 0) rows.push('Заданная инструментальная неопределенность: ' + udShown.toFixed(2));
+  if (tabled) {
+    rows.push('Табличное значение временной неопределенности: ' + a.uv.toFixed(2));
+    rows.push('Табличное значение коэффициента кратности: ' + (a.kp > 0 ? a.kp.toFixed(2) : '— (в методике не задан)'));
+  }
   if (udDiffers(a)) {
     rows.push(`В расчёте использовано ${Math.round(a.u_d_eff * 100)} % вместо введённых ${Math.round(a.u_d * 100)} %`);
   }
@@ -4354,7 +4447,8 @@ function applyAssess(a, source) {
   }
   if (vText) {
     const tail = (a.verdict === 'complies' || a.verdict === 'exceeds')
-      ? 'Сравнение средней ОА радона с нормативной (среднегодовой) величиной проведено с учетом временной и инструментальной неопределенностей, а также коэффициента кратности, табличные и заданные значения которых приводятся ниже, согласно Рациональному Методу тестирования радона в зданиях.'
+      /* #RADEX-272, Цапалов п.6 */
+      ? 'Сравнение верхней границы доверительного интервала среднегодовой ОА радона с нормативом проведено с учетом временной и инструментальной неопределенностей, а также коэффициента кратности, табличные и заданные значения которых приводятся ниже, согласно Рациональному Методу тестирования радона в зданиях.'
       : '';
     vText.textContent = [w.note, tail].filter(Boolean).join(' ');
   }
@@ -4365,6 +4459,7 @@ function applyAssess(a, source) {
 
   fillMethodTableVals(a);
   updateAnnualCard(a);   /* #RADEX-226 */
+  renderResultsTable();  /* #RADEX-268 */
 
   const udNote = document.getElementById('ud-eff-note');
   if (udNote) {
@@ -4536,29 +4631,22 @@ function assessMethodHtml(a) {
     html.push('<div class="mc-calc mc-off">критерий (2) в ограниченном режиме не определён</div>');
   }
 
-  // Правило 9 месяцев
+  // Правило 10 месяцев (#RADEX-271: было 9; порог — с платы, /api/method/tables rule_days)
+  const ruleDays = methodRuleDays();
+  const ruleMonths = Math.round(ruleDays / 30);
   if (crit1 >= c_rl) {
-    const sign3 = days >= 270 ? '≥' : '&lt;';
-    const result3 = days >= 270 ? '<b>выполнен</b>' : '<b>не выполнен</b>';
-    html.push('<div class="mc-rule">Правило 9 месяцев, §7.1.2: критерий (1) не выполнен И t ≥ 9 месяцев</div>');
-    html.push(`<div class="mc-calc">t = ${days} сут. ${sign3} 270 сут. → ${result3}</div>`);
+    const sign3 = days >= ruleDays ? '≥' : '&lt;';
+    const result3 = days >= ruleDays ? '<b>выполнен</b>' : '<b>не выполнен</b>';
+    html.push(`<div class="mc-rule">Правило ${ruleMonths} месяцев, §7.1.2: критерий (1) не выполнен И t ≥ ${ruleMonths} месяцев</div>`);
+    html.push(`<div class="mc-calc">t = ${days} сут. ${sign3} ${ruleDays} сут. → ${result3}</div>`);
   }
 
-  // Итог
-  if (a.verdict === 'ok') {
-    html.push('<div class="mc-total">Итог: критерий (1) выполнен — помещение признаётся соответствующим нормативу (§7.1.1).</div>');
-  } else if (a.verdict === 'exceeds') {
-    /* Прошивка признаёт превышение по ДВУМ разным причинам (radon_stats.c:666:
-       `exceed || days >= 270`), и человеку важно, по какой именно: сработавший
-       критерий (2) — это измеренное превышение, а правило 9 месяцев — исчерпание
-       времени без доказанного соответствия. */
-    const byCrit2 = kp > 0 && !restricted && crit2 > c_rl;
-    html.push('<div class="mc-total">Итог: ' + (byCrit2
-      ? 'критерий (1) не сработал, но сработал критерий (2)'
-      : 'критерий (1) не сработал, а продолжительность достигла 9 месяцев')
-      + ' — помещение признаётся не соответствующим нормативу (§7.1.2).</div>');
-  } else if (a.verdict === 'gray') {
-    html.push('<div class="mc-total">Итог: ни один критерий не сработал — решение не принято, требуется продолжить измерение либо снизить концентрацию (§7.1.3).</div>');
+  // Итог — #RADEX-271, Цапалов п.5: формулировка автора со сноской (methodConclusionLines).
+  // Прежний блок сверял verdict с 'ok'/'gray', которых плата не отдаёт (complies/uncertain).
+  const concl = methodConclusionLines(a, ruleDays);
+  if (concl.lines.length) {
+    html.push('<div class="mc-total"><b>Заключение:</b><br>' + concl.lines.join('<br>') + '</div>');
+    if (concl.note) html.push(`<div class="mc-note">${concl.note}</div>`);
   }
 
   // Предупреждение о таблице
@@ -5171,10 +5259,11 @@ async function methodTick() {
          нет, radon_stats_assess_range() выходит по points==0 и длительности не
          считает. «Замер идёт 0 суток» формально верно и читается плохо —
          говорим прямо, чего именно ждём (проверено на живой плате 31.08). */
-      testState.textContent = d > 0
-        ? `Замер идёт ${d} ${word} — ${since}`
-        : 'Замер начат — первая запись ещё не пришла';
-      testState.className = 'test-state running';   // пульсирующая точка: замер идёт прямо сейчас
+      /* #RADEX-273, Цапалов п.7: «Замер идёт N суток — начат …» удалено — начало и
+         продолжительность уже есть в карточке результата выше. */
+      void since; void word;
+      testState.textContent = d > 0 ? '' : 'Замер начат — первая запись ещё не пришла';
+      testState.className = d > 0 ? 'test-state' : 'test-state running';
     } else {
       testState.textContent = 'Данных ещё нет — замер начнётся с первой записи';
       testState.className = 'test-state';

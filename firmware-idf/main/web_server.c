@@ -519,6 +519,18 @@ static esp_err_t handle_journal_get(httpd_req_t *req) {
     return httpd_resp_send(req, buf, len);
 }
 static esp_err_t handle_journal_refresh(httpd_req_t *req) {
+    /* аудит 281-A F3: не чаще раза в 60 с и не во время сеанса/очереди — 429 */
+    static int64_t s_last_us = 0;
+    int64_t now = esp_timer_get_time();
+    bool busy = ble_radex_journal_busy() || ble_radex_journal_pending();
+    if (busy || (s_last_us != 0 && now - s_last_us < 60 * 1000000LL)) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_hdr(req, "Retry-After", "60");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req, busy ? "{\"accepted\":false,\"reason\":\"busy\"}"
+                                            : "{\"accepted\":false,\"reason\":\"rate limit 60 s\"}");
+    }
+    s_last_us = now;
     ble_radex_journal_request();   /* исполнит задача BLE в паузе между кругами */
     char buf[64];
     int n = snprintf(buf, sizeof(buf), "{\"accepted\":true,\"connected\":%s}",

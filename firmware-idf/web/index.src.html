@@ -2820,6 +2820,17 @@ function testsFormatSpan(sec) {
   const m = Math.floor((sec % 3600) / 60);
   return h > 0 ? `${h} ч ${m} мин` : `${m} мин`;
 }
+/* #RADEX-285, оператор 16.09: «откуда лезут старые измерения?» — ряд «текущая сессия»
+   грузился с from=0, то есть вся флеш-история (97 точек с 03.09 у замера из 6 изм.).
+   Теперь from = start ИДУЩЕГО замера. Нет идущего или его начало в будущем (часы
+   браузера и платы расходятся) — вся история, и подпись говорит это прямо. */
+function currentSessionFrom(tests, nowSec) {
+  const cur = Array.isArray(tests) ? tests.find(t => t && t.active) : null;
+  if (cur && cur.start > 0 && cur.start <= nowSec) return { from: cur.start, label: 'текущий замер' };
+  return { from: 0, label: 'вся история платы' };
+}
+let testsCacheLoaded = false;   /* #RADEX-285: список замеров ещё не приходил — from неизвестен */
+let boardSessionFrom = -1;      /* #RADEX-285: с какого from загружен ряд «текущая сессия» */
 /* Список замеров: карточки в #tests-list, клик — грузит точки замера как
    отдельный ряд (тем же multiPutSeries, что «Вся история платы»). Список
    перечитывается при каждом заходе на вкладку «Графики» (switchTab) и после
@@ -2836,6 +2847,7 @@ async function multiLoadTestsList() {
     const r = await fetch('/api/tests', {cache: 'no-store'});
     const list = await r.json();
     testsCache = Array.isArray(list) ? list : [];
+    testsCacheLoaded = true;
     const cur = testsCache.find(x => x && x.active);
     const lf = document.getElementById('test-label');
     if (cur && lf && document.activeElement !== lf) lf.value = cur.label || '';
@@ -2846,6 +2858,12 @@ async function multiLoadTestsList() {
     return;
   }
   renderTestsPanel();
+  /* #RADEX-285: замер начат или завершён — уже загруженный ряд текущей сессии
+     перечитывается с нового начала, иначе он показывал бы прежний период. */
+  if (series.some(s => s.name === 'текущая сессия') && typeof window.multiAddBoardHistory === 'function'
+      && currentSessionFrom(testsCache, Math.floor(Date.now() / 1000)).from !== boardSessionFrom) {
+    window.multiAddBoardHistory();
+  }
 }
 
 function multiBind() {
@@ -2900,9 +2918,15 @@ function multiBind() {
   /* #RADEX-237: панель «Замеры» живёт вне этого замыкания, а ряд общей
      истории строит multiAddFromBoard — отдаём ей ту же функцию под тем же
      именем ряда, чтобы у истории не завелось двух рядов с разными именами. */
-  window.multiAddBoardHistory = function () { return multiAddFromBoard('текущая сессия', 0, 0); };
+  /* #RADEX-285: from — начало идущего замера (currentSessionFrom), а не 0. */
+  window.multiAddBoardHistory = async function () {
+    if (!testsCacheLoaded) await multiLoadTestsList();   /* без списка замеров from не узнать */
+    const cs = currentSessionFrom(testsCache, Math.floor(Date.now() / 1000));
+    boardSessionFrom = cs.from;
+    return multiAddFromBoard('текущая сессия', cs.from, 0);
+  };
   window.multiEnsureSession = function () {
-    if (series.length === 0) multiAddFromBoard('текущая сессия', 0, 0);
+    if (series.length === 0) window.multiAddBoardHistory();
   };
 
   const smaInput = document.getElementById('multi-sma');
@@ -3379,7 +3403,7 @@ function multiShowTooltip(clientX, clientY, lines) {
      нет вовсе: цветной квадратик и так говорит, о каком ряде речь. Полное имя
      («замер 05.08.2025, 00:55:05») не влезало, и подсказка обрывалась. */
   const shortName = n => {
-    if (n === 'текущая сессия') return 'текущий замер';
+    if (n === 'текущая сессия') return currentSessionFrom(testsCache, Math.floor(Date.now() / 1000)).label;
     const rows = (typeof testsPanelRows === 'function') ? testsPanelRows() : [];
     const row = rows.find(r => r.seriesName === n);
     return row ? row.title : n;
@@ -4365,7 +4389,10 @@ function assessViewSource() {
   }
   const boardRow = testsPanelRows().find(r => r.key === 'board');
   if (boardRow && series.find(x => x.name === boardRow.seriesName)?.visible === true) {
-    return { start: 0, name: 'история платы', seriesName: boardRow.seriesName };
+    /* #RADEX-285: заключение по текущему замеру не начинается раньше его start */
+    const cs = currentSessionFrom(testsCache, Math.floor(Date.now() / 1000));
+    return { start: 0, fromMin: cs.from, name: cs.from > 0 ? 'текущий замер' : 'история платы',
+             seriesName: boardRow.seriesName };
   }
   return null;
 }
@@ -4385,7 +4412,7 @@ async function assessFromView() {
 
     if (!visibleRange) return;
 
-    const from = Math.floor(visibleRange.min);
+    const from = Math.max(Math.floor(visibleRange.min), src.fromMin || 0);   /* #RADEX-285 */
     const to = Math.ceil(visibleRange.max);
 
     if (!isFinite(from) || !isFinite(to) || to <= from) return;
@@ -4805,7 +4832,8 @@ function testsPanelRows() {
   rows.push({
     key: 'board',
     seriesName: 'текущая сессия',
-    title: running && running.label ? 'текущий замер · ' + running.label : 'текущий замер',
+    /* #RADEX-285: без идущего замера ряд — вся флеш-история, так и подписываем */
+    title: running ? (running.label ? 'текущий замер · ' + running.label : 'текущий замер') : 'вся история платы',
     when: running ? new Date(running.start * 1000).toLocaleString('ru-RU') : 'все записи флеш',
     meta: running ? `${running.points} изм · ${testsFormatSpan(running.span_sec)} · идёт сейчас` : '',
     start: 0,

@@ -16,3 +16,15 @@ static inline bool radon_rule_months_reached(uint32_t days)
 {
     return days >= (uint32_t)RADON_RULE_DAYS;
 }
+
+/* Аудит 267 D3: решение по критериям (1), (2) и правилу §7.1.2 — чистая функция;
+   вердикт платы (radon_stats.c) берётся из неё, поэтому хост-тест покрывает саму строку решения. */
+#define RADON_DECIDE_COMPLIES   1
+#define RADON_DECIDE_EXCEEDS    2
+#define RADON_DECIDE_UNCERTAIN  3
+static inline int radon_method_decide(bool crit1_met, bool crit2_met, int days)
+{
+    if (crit1_met) return RADON_DECIDE_COMPLIES;
+    if (crit2_met || (days > 0 && radon_rule_months_reached((uint32_t)days))) return RADON_DECIDE_EXCEEDS;
+    return RADON_DECIDE_UNCERTAIN;
+}

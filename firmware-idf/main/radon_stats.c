@@ -674,13 +674,13 @@ static void radon_stats_assess_src_locked(const char *src, time_t from, time_t t
     }
 
     // Принимаем решение
-    if (comply) {
-        out->verdict = RADON_VERDICT_COMPLIES;
-    } else if (exceed || (days > 0 && radon_rule_months_reached((uint32_t)days))) {   /* #RADEX-271: 10 мес., было 270 сут */
-        out->verdict = RADON_VERDICT_EXCEEDS;
-    } else {
-        out->verdict = RADON_VERDICT_UNCERTAIN;
+    /* #RADEX-271 (аудит 267 D3): решение — radon_method_decide(), покрыто хост-тестом */
+    switch (radon_method_decide(comply, exceed, days)) {
+        case RADON_DECIDE_COMPLIES: out->verdict = RADON_VERDICT_COMPLIES; break;
+        case RADON_DECIDE_EXCEEDS:  out->verdict = RADON_VERDICT_EXCEEDS;  break;
+        default:                    out->verdict = RADON_VERDICT_UNCERTAIN; break;
     }
+    out->crit2_met = exceed;   /* аудит 267 D1: точный результат критерия (2) — странице */
 
     // Заполняем структуру
     out->c = c;
@@ -815,7 +815,7 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
            поднятия до минимума методики (0.2). Расходятся только когда
            введённое значение было МЕНЬШЕ минимума — иначе равны, и страница
            молчит (см. methodTick()). */
-        "\"crit1\":%.1f,\"crit2\":%.1f,\"days\":%u,\"c_rl\":%.1f,\"u_d\":%.2f,\"u_d_eff\":%.2f,\"restricted\":%s},"
+        "\"crit1\":%.1f,\"crit2\":%.1f,\"days\":%u,\"c_rl\":%.1f,\"u_d\":%.2f,\"u_d_eff\":%.2f,\"restricted\":%s,\"crit2_met\":%s},"
         "\"storage\":{\"ok\":true,\"bytes\":%d,\"points\":%u},"
         "\"test\":{\"start\":%lld,\"started\":%s,\"explicit\":%s,\"end\":%lld,\"finished\":%s}}",
         p1.mean, (unsigned)p1.points, p1.coverage, (unsigned)p1.span_sec, p1.valid ? "true" : "false",
@@ -829,7 +829,7 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
         assess.c, assess.uv, assess.kp, assess.crit1, assess.crit2,
         (unsigned)assess.days, assess.c_rl, u_d,
         assess.u_d_eff > 0 ? assess.u_d_eff : u_d,   /* оценка не дошла до клампа — эхо введённого, расхождения нет */
-        assess.restricted ? "true" : "false", (int)bytes, (unsigned)points,
+        assess.restricted ? "true" : "false", assess.crit2_met ? "true" : "false", (int)bytes, (unsigned)points,
         (long long) tstart,
         tstart != 0 ? "true" : "false",
         texplicit ? "true" : "false",
@@ -1526,9 +1526,9 @@ static int assess_json_fmt(char *buf, size_t len, const radon_assess_t *a,
     }
     float u_d_eff = (a->u_d_eff > 0) ? a->u_d_eff : u_d;
     return snprintf(buf, len,
-        "{\"verdict\":\"%s\",\"c\":%.1f,\"uv\":%.2f,\"kp\":%.2f,\"crit1\":%.1f,\"crit2\":%.1f,\"days\":%u,\"c_rl\":%.1f,\"u_d\":%.2f,\"u_d_eff\":%.2f,\"restricted\":%s,\"from\":%lld,\"to\":%lld}",
+        "{\"verdict\":\"%s\",\"c\":%.1f,\"uv\":%.2f,\"kp\":%.2f,\"crit1\":%.1f,\"crit2\":%.1f,\"days\":%u,\"c_rl\":%.1f,\"u_d\":%.2f,\"u_d_eff\":%.2f,\"restricted\":%s,\"crit2_met\":%s,\"from\":%lld,\"to\":%lld}",
         verdict_str, a->c, a->uv, a->kp, a->crit1, a->crit2, (unsigned)a->days,
-        a->c_rl, u_d, u_d_eff, restricted ? "true" : "false",
+        a->c_rl, u_d, u_d_eff, restricted ? "true" : "false", a->crit2_met ? "true" : "false",
         (long long)from, (long long)to);
 }
 

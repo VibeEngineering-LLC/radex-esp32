@@ -13,6 +13,11 @@ int main(void)
     /* 10,0 мес = 300 сут — применяется */
     TEST("test_rule_10_months_applied", radon_rule_months_reached(300) && radon_rule_months_reached(341));
     TEST("test_rule_short_test", !radon_rule_months_reached(0) && !radon_rule_months_reached(4));
+    /* аудит 267 D3: строка решения вердикта — крит.(1) и (2) не выполнены, решает только правило */
+    TEST("test_decide_rule_boundary", radon_method_decide(false, false, 297) == RADON_DECIDE_UNCERTAIN
+                                   && radon_method_decide(false, false, 300) == RADON_DECIDE_EXCEEDS);
+    TEST("test_decide_criteria", radon_method_decide(true, true, 400) == RADON_DECIDE_COMPLIES
+                              && radon_method_decide(false, true, 5) == RADON_DECIDE_EXCEEDS);
     printf("итого (method): красных тестов %d из %d\n", fail_tests, total_tests);
     return fail_tests ? 1 : 0;
 }

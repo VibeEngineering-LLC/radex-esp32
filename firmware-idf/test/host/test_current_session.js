@@ -36,6 +36,10 @@ const t = [
   ['итог п.5 при 341 сут (дословно)', JSON.stringify(concl({verdict: 'exceeds', days: 341, kp: 1.05, crit2: 250, c_rl: 200, restricted: false}, 300).lines)
      === JSON.stringify(['1. Критерий (1) не выполнен при продолжительности теста более 10* месяцев,', '2. Критерий (2) выполнен,', 'Поэтому помещение не соответствует нормативу, согласно §7.1.2.'])],
   ['297 сут (9,9 мес) — без «более 10 месяцев» и сноски', (c => !c.lines[0].includes('10*') && c.note === '')(concl({verdict: 'uncertain', days: 297, kp: 1.1, crit2: 150, c_rl: 200}, 300))],
+  // аудит 267 D1: плата решила crit2 > c_rl по точному 200.04, в JSON округлено до 200.0
+  ['D1: критерий (2) по флагу платы crit2_met, не по округлённому числу', concl({verdict: 'exceeds', days: 150, kp: 1.2, crit2: 200.0, crit2_met: true, c_rl: 200, restricted: false}, 300).lines[1] === '2. Критерий (2) выполнен,'],
+  // D2: ограниченный режим — Kp не задан (-1)
+  ['D2: ограниченный режим — критерий (2) не определён', concl({verdict: 'uncertain', days: 20, kp: -1, crit2: 0, crit2_met: false, c_rl: 200, restricted: true}, 300).lines[1] === '2. Критерий (2) не определён,'],
   ['300 сут (10,0 мес) — со сноской', concl({verdict: 'exceeds', days: 300, kp: 1.09, crit2: 150, c_rl: 200}, 300).note.startsWith('*целесообразно')],
 ];
 for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }

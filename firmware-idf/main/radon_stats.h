@@ -77,6 +77,7 @@ typedef struct {
     float    c_rl;
     bool     restricted;
     float    u_d_eff;
+    bool     crit2_met;   /* аудит 267 D1: crit2 > c_rl по точному float (в JSON crit2 округлён до 0.1) */
 } radon_assess_t;
 
 /**

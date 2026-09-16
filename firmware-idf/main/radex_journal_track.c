@@ -118,7 +118,7 @@ bool radex_j_final_status(const radex_journal_t *j, const radex_j_track_t *t, ch
         if (radex_journal_parse_summary(j->summary_pkt[i].data, j->summary_pkt[i].len, &s) == RADEX_J_SHORT)
             shorts++;
     }
-    for (int i = 0; i < (int)j->n_record_pkt && i < RADEX_J_MAX_PKT; i++) {
+    for (int i = 0; i < (int)j->n_record_pkt && i < RADEX_J_MAX_REC + 1; i++) {
         radex_journal_record_t r;
         if (radex_journal_parse_record(j->record_pkt[i].data, j->record_pkt[i].len, &r) == RADEX_J_SHORT)
             shorts++;
@@ -137,6 +137,7 @@ bool radex_j_final_status(const radex_journal_t *j, const radex_j_track_t *t, ch
         return false;
     }
 
-    snprintf(st, st_len, "ok");
+    /* журнал длиннее RADEX_J_MAX_REC: записи верны, но не все */
+    snprintf(st, st_len, "%s", j->truncated ? "truncated" : "ok");
     return true;
 }

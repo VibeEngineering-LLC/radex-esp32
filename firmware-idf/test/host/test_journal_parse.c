@@ -216,6 +216,51 @@ static void test_whitelist_rejects(void) {
     CHECK(count == 2, "count = %d", count);
 }
 
+/* 48: литерал из перехвата (last=3) и живая плата 16.09 (last=10 -> 9..0) */
+static void test_records_cmd_accepts(void) {
+    const uint8_t cap[8] = {0x48,0x00,0x02,0x00,0x01,0x00,0x00,0x00};
+    const uint8_t live[8] = {0x48,0x00,0x09,0x00,0x00,0x00,0x00,0x00};
+    uint8_t built[8];
+    CHECK(radex_journal_records_cmd_ok(cap, 8, 3), "capture literal at last=3");
+    CHECK(radex_journal_cmd_allowed_ctx(cap, 8, 3), "capture literal via ctx whitelist");
+    CHECK(radex_journal_records_cmd_ok(live, 8, 10), "(9,0) at last=10");
+    radex_journal_records_cmd_build(built, 9, 0);
+    CHECK(memcmp(built, live, 8) == 0, "build(9,0) == 48 00 09 00 00 00 00 00");
+    CHECK(radex_journal_cmd_allowed_ctx(RADEX_J_CMD_SUMMARY, 8, 0), "47 without summary still allowed");
+}
+
+/* единственный тест на from < last_record (мишень мутации #SA-3) */
+static void test_records_cmd_from_ge_last(void) {
+    const uint8_t a[8] = {0x48,0x00,0x0a,0x00,0x00,0x00,0x00,0x00};   /* from=10, last=10 */
+    const uint8_t b[8] = {0x48,0x00,0x00,0x00,0x00,0x00,0x00,0x00};   /* from=0, нет сводки */
+    CHECK(!radex_journal_records_cmd_ok(a, 8, 10), "from == last rejected");
+    CHECK(!radex_journal_records_cmd_ok(a, 8, 5), "from > last rejected");
+    CHECK(!radex_journal_cmd_allowed_ctx(b, 8, 0), "no summary (last=0) rejected");
+}
+
+static void test_records_cmd_rejects_shape(void) {
+    const uint8_t to_gt[8] = {0x48,0x00,0x02,0x00,0x03,0x00,0x00,0x00};
+    const uint8_t b6[8]    = {0x48,0x00,0x02,0x00,0x01,0x00,0x01,0x00};
+    const uint8_t b7[8]    = {0x48,0x00,0x02,0x00,0x01,0x00,0x00,0x01};
+    const uint8_t b1[8]    = {0x48,0x01,0x02,0x00,0x01,0x00,0x00,0x00};
+    CHECK(!radex_journal_records_cmd_ok(to_gt, 8, 10), "to > from rejected");
+    CHECK(!radex_journal_records_cmd_ok(b6, 8, 10), "byte 6 != 0 rejected");
+    CHECK(!radex_journal_records_cmd_ok(b7, 8, 10), "byte 7 != 0 rejected");
+    CHECK(!radex_journal_records_cmd_ok(b1, 8, 10), "byte 1 != 0 rejected");
+    CHECK(!radex_journal_records_cmd_ok(RADEX_J_CMD_RECORDS, 7, 10), "len 7 rejected");
+    CHECK(!radex_journal_cmd_allowed_ctx(RADEX_J_CMD_SUMMARY_NEXT, 7, 10), "81 len 7 rejected");
+}
+
+static void test_records_range_more(void) {
+    uint16_t f = 1, t = 1; bool tr = true;
+    CHECK(!radex_journal_records_range(0, &f, &t, &tr), "last=0: no range");
+    CHECK(radex_journal_records_range(10, &f, &t, &tr) && f == 9 && t == 0 && !tr, "last=10 -> 9..0");
+    CHECK(radex_journal_records_range(64, &f, &t, &tr) && f == 63 && t == 0 && !tr, "last=64 -> 63..0");
+    CHECK(radex_journal_records_range(100, &f, &t, &tr) && f == 99 && t == 36 && tr, "last=100 -> 99..36 truncated");
+    CHECK(radex_journal_records_more(1, 10, false) && !radex_journal_records_more(10, 10, false), "more until want");
+    CHECK(!radex_journal_records_more(1, 10, true), "filler stops");
+}
+
 static void test_cccd(void) {
     uint8_t cccd1[2] = {1, 0};
     CHECK(radex_journal_cccd_allowed(cccd1, 2), "cccd1 allowed");
@@ -296,6 +341,21 @@ static void test_raw_store(void) {
     CHECK(r.data[31] == 31, "data[31] = %u", r.data[31]);
 }
 
+/* худший случай JSON: 64 записи, все пакеты по 32 байта, float = -FLT_MAX, статус 47 символов */
+static void test_json_capacity_64(void) {
+    static radex_journal_t j; static char buf[RADEX_J_JSON_MAX]; uint8_t raw[32];
+    memset(&j, 0xff, sizeof j); memset(raw, 0xab, sizeof raw);
+    memset(j.status, 'x', 47); j.status[47] = 0; j.valid = j.ok = j.have_summary = j.truncated = true;
+    j.summary.avg = j.summary.sko = -3.4028235e38f;
+    j.n_summary_pkt = RADEX_J_MAX_PKT; j.n_records = RADEX_J_MAX_REC; j.n_record_pkt = RADEX_J_MAX_REC + 1;
+    for (int i = 0; i < RADEX_J_MAX_PKT; i++) radex_journal_raw_store(&j.summary_pkt[i], raw, 32);
+    for (int i = 0; i < RADEX_J_MAX_REC + 1; i++) radex_journal_raw_store(&j.record_pkt[i], raw, 32);
+    for (int i = 0; i < RADEX_J_MAX_REC; i++) { j.records[i].oa = j.records[i].unk_f10 = -3.4028235e38f; }
+    int n = radex_journal_json(&j, true, true, buf, sizeof buf);
+    printf("    json worst case 64 records: %d bytes of %d\n", n, RADEX_J_JSON_MAX);
+    CHECK(n > 0 && n < RADEX_J_JSON_MAX, "worst-case JSON fits (%d)", n);
+}
+
 int main(void) {
     RUN(test_summary_last_record);
     RUN(test_summary_raw_floats);
@@ -313,6 +373,11 @@ int main(void) {
     RUN(test_cccd);
     RUN(test_json_shape);
     RUN(test_raw_store);
+    RUN(test_records_cmd_accepts);
+    RUN(test_records_cmd_from_ge_last);
+    RUN(test_records_cmd_rejects_shape);
+    RUN(test_records_range_more);
+    RUN(test_json_capacity_64);
 
     printf("итого: красных тестов %d из %d\n", g_fail_tests, g_total_tests);
     return g_fail_tests ? 1 : 0;

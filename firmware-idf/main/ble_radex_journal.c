@@ -22,7 +22,7 @@
 #define J_STEP_TIMEOUT_MS  3000
 #define J_HEX_MAX          64      /* байт в строке hex-лога */
 
-typedef enum { J_OP_CCCD_ON, J_OP_WRITE, J_OP_CCCD_OFF } j_op_t;
+typedef enum { J_OP_CCCD_ON, J_OP_WRITE, J_OP_CCCD_OFF, J_OP_RECORDS } j_op_t;
 typedef enum { J_PH_SUMMARY, J_PH_RECORDS } j_phase_t;
 typedef struct {
     j_op_t          op;
@@ -36,16 +36,19 @@ static const j_step_t s_steps[] = {
     { J_OP_WRITE,   RADEX_J_CMD_SUMMARY,      0,   false, J_PH_SUMMARY },
     { J_OP_WRITE,   RADEX_J_CMD_SUMMARY_NEXT, 450, true,  J_PH_SUMMARY },
     { J_OP_WRITE,   RADEX_J_CMD_SUMMARY_NEXT, 0,   true,  J_PH_SUMMARY },
-    { J_OP_WRITE,   RADEX_J_CMD_RECORDS,      300, false, J_PH_RECORDS },
-    { J_OP_WRITE,   RADEX_J_CMD_RECORDS_NEXT, 100, true,  J_PH_RECORDS },
-    { J_OP_WRITE,   RADEX_J_CMD_RECORDS_NEXT, 0,   true,  J_PH_RECORDS },
+    { J_OP_RECORDS, NULL,                     300, false, J_PH_RECORDS },   /* 48: собирается по сводке */
+    { J_OP_WRITE,   RADEX_J_CMD_RECORDS_NEXT, 100, true,  J_PH_RECORDS },   /* повторяется, см. j_next_step */
     /* аудит 281-B F7: выключить уведомления в конце сеанса (в захвате не было) */
     { J_OP_CCCD_OFF, NULL,                    0,   false, J_PH_RECORDS },
 };
 #define J_STEPS ((int)(sizeof(s_steps) / sizeof(s_steps[0])))
 
-// Паузы и число запросов 81/82 (по два) скопированы с захвата; второй 81 вернул заглушку из 0xff.
-// Параметры 0x48 НЕ поняты: 02 00 01 00 вернуло записи 3 и 2 из трёх. Запись — WRITE_TYPE_RSP
+#define J_S_SUM_END   3   /* последний 81 ff: сводка должна быть */
+#define J_S_REC_NEXT  5   /* 82 ff, повторяется */
+#define J_S_OFF       6   /* CCCD 00 00 */
+// Паузы и два запроса 81 скопированы с захвата; второй 81 вернул заглушку из 0xff.
+// 0x48 (живая плата 16.09): 48 00 <from> <to> 00 00, индексы с нуля по убыванию; берём
+// from = last-1 .. to = 0 (не более 64), 82 ff — до заглушки или want записей. Запись — WRITE_TYPE_RSP
 // (тип ATT-записи приложения в отчёте не указан): нужна квитанция, чтобы шаги не наложились.
 
 /* MTU. Запись журнала — 24 байта; при ATT MTU 23 notify режется до 20 (теряются T и RH).
@@ -62,6 +65,10 @@ static volatile int     s_step;                 /* пишет tick под s_mtx,
 static TickType_t       s_t0;                   /* начало паузы шага */
 static TickType_t       s_deadline;
 static radex_j_track_t  s_trk;                  /* под s_mtx: квитанции/notify по шагам */
+static bool             s_last_filler;          /* под s_mtx: последний пакет записей — заглушка */
+static uint16_t         s_want;                 /* записей в запрошенном диапазоне */
+static uint16_t         s_next_sent;            /* сколько 82 ff отправлено */
+static uint8_t          s_rec_cmd[RADEX_J_CMD_LEN];   /* 48 этого сеанса */
 static uint32_t         s_sess_gen;             /* поколение соединения, на котором идёт сеанс */
 static esp_gatt_if_t    s_gif;
 static volatile uint16_t s_conn;
@@ -90,7 +97,9 @@ static esp_err_t j_write_cmd(const uint8_t *cmd, size_t len)
         return ESP_ERR_NOT_ALLOWED;
     }
     memcpy(tmp, cmd, RADEX_J_CMD_LEN);
-    if (!radex_journal_cmd_allowed(tmp, RADEX_J_CMD_LEN)) {
+    /* 48 проверяется против last_record ЭТОГО сеанса; без сводки last = 0 — любой 48 отвергнут */
+    uint16_t last = s_work.have_summary ? s_work.summary.last_record : 0;
+    if (!radex_journal_cmd_allowed_ctx(tmp, RADEX_J_CMD_LEN, last)) {
         ESP_LOGE(TAG, "ОТКАЗ: команда вне белого списка (первый байт 0x%02X) — не отправлена", tmp[0]);
         return ESP_ERR_NOT_ALLOWED;
     }
@@ -113,6 +122,28 @@ static esp_err_t j_write_cccd(const uint8_t *val)   /* val: RADEX_J_CCCD_ON ил
 
 static void lk(void)  { if (s_mtx) xSemaphoreTake(s_mtx, portMAX_DELAY); }
 static void ulk(void) { if (s_mtx) xSemaphoreGive(s_mtx); }
+
+/* Следующий шаг после завершённого (под s_mtx). -1 — сеанс прерван, статус в *why. */
+static int j_next_step(int done_step, const char **why)
+{
+    if (done_step == J_S_SUM_END) {
+        uint16_t from, to; bool tr;
+        if (!s_work.have_summary) { *why = "no summary"; return -1; }   /* 48 без сводки не шлём */
+        if (!radex_journal_records_range(s_work.summary.last_record, &from, &to, &tr)) return J_S_OFF;
+        radex_journal_records_cmd_build(s_rec_cmd, from, to);
+        s_work.req_from = from; s_work.req_to = to; s_work.truncated = tr;
+        s_want = (uint16_t)(from - to + 1); s_next_sent = 0; s_last_filler = false;
+        ESP_LOGI(TAG, "записи: последняя №%u, запрашиваю индексы %u..%u (%u)%s", (unsigned)s_work.summary.last_record,
+                 (unsigned)from, (unsigned)to, (unsigned)s_want, tr ? ", журнал усечён до 64" : "");
+        return done_step + 1;
+    }
+    if (done_step == J_S_REC_NEXT) {
+        if (!radex_journal_records_more(s_work.n_records, s_want, s_last_filler)) return J_S_OFF;
+        if (s_next_sent >= s_want + 2) { *why = "record loop limit"; return -1; }   /* ни заглушки, ни записей */
+        return J_S_REC_NEXT;
+    }
+    return done_step + 1;
+}
 
 /* ok=true означает «все шаги пройдены»; итоговый статус решает radex_j_final_status:
    без записей, с коротким пакетом (MTU) или с событиями вне шага — не "ok" (281-B F2/F3/F5). */
@@ -252,14 +283,16 @@ void ble_radex_journal_tick(bool can_start, bool connected, uint32_t conn_gen,
         if ((now - s_t0) < pdMS_TO_TICKS(sp->delay_ms)) return;
         esp_err_t e = (sp->op == J_OP_CCCD_ON)  ? j_write_cccd(RADEX_J_CCCD_ON)
                     : (sp->op == J_OP_CCCD_OFF) ? j_write_cccd(RADEX_J_CCCD_OFF)
+                    : (sp->op == J_OP_RECORDS)  ? j_write_cmd(s_rec_cmd, RADEX_J_CMD_LEN)
                     : j_write_cmd(sp->cmd, RADEX_J_CMD_LEN);
+        if (e == ESP_OK && s_step == J_S_REC_NEXT) s_next_sent++;
         if (e != ESP_OK) {   /* синхронный отказ: запись не ушла, квитанции не будет */
             snprintf(st, sizeof st, "send error 0x%x: step %d", (unsigned)e, (int)s_step);
             j_finish(false, st);
             return;
         }
         lk();
-        radex_j_track_on_send(&s_trk, sp->op == J_OP_WRITE ? RADEX_NUS_H_RX : RADEX_NUS_H_CCCD,
+        radex_j_track_on_send(&s_trk, (sp->op == J_OP_WRITE || sp->op == J_OP_RECORDS) ? RADEX_NUS_H_RX : RADEX_NUS_H_CCCD,
                               sp->expect_notify);
         ulk();
         s_deadline = now + pdMS_TO_TICKS(J_STEP_TIMEOUT_MS);
@@ -270,8 +303,15 @@ void ble_radex_journal_tick(bool can_start, bool connected, uint32_t conn_gen,
     lk();
     radex_j_track_t t = s_trk;
     bool done = radex_j_track_step_done(&s_trk);
-    if (done) { radex_j_track_step_idle(&s_trk); s_step++; }   /* notify в паузе — уже «вне шага» */
+    const char *why = NULL;
+    int next = s_step;
+    if (done) {   /* notify в паузе — уже «вне шага» */
+        radex_j_track_step_idle(&s_trk);
+        next = j_next_step(s_step, &why);
+        if (next >= 0) s_step = next;
+    }
     ulk();
+    if (done && next < 0) { j_finish(false, why); return; }
     if (t.acked && t.ack_status != ESP_GATT_OK) {
         snprintf(st, sizeof st, "gatt status 0x%x: step %d", (unsigned)t.ack_status, (int)s_step);
         j_finish(false, st);
@@ -357,12 +397,13 @@ void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_
                 }
                 ESP_LOGI(TAG, "пакет сводки: разбор=%d", r);
             } else {
-                if (s_work.n_record_pkt < RADEX_J_MAX_PKT) {
+                if (s_work.n_record_pkt < RADEX_J_MAX_REC + 1) {
                     radex_journal_raw_store(&s_work.record_pkt[s_work.n_record_pkt++], param->notify.value, param->notify.value_len);
                 }
                 radex_journal_record_t rec;
                 int r = radex_journal_parse_record(param->notify.value, param->notify.value_len, &rec);
-                if (r == RADEX_J_OK && s_work.n_records < RADEX_J_MAX_PKT) {
+                if (r == RADEX_J_FILLER) s_last_filler = true;
+                if (r == RADEX_J_OK && s_work.n_records < RADEX_J_MAX_REC) {
                     s_work.records[s_work.n_records++] = rec;
                     ESP_LOGI(TAG, "запись №%u: время(сыр.)=%lu ОА=%.2f Бк/м3 T×10=%u RH=%u%%",
                              (unsigned)rec.number, (unsigned long)rec.time_raw, (double)rec.oa,

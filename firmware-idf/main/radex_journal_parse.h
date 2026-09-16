@@ -24,6 +24,20 @@ extern const uint8_t RADEX_J_CMD_RECORDS_NEXT[RADEX_J_CMD_LEN];  // 82 ff 00 ..
 
 // true — только если (cmd,len) побайтно равен одной из четырёх команд выше.
 bool radex_journal_cmd_allowed(const uint8_t *cmd, size_t len);
+
+// Команда записей (живая плата 16.09, гипотеза одобрена оператором): 48 00 <from u16> <to u16> 00 00,
+// индексы записей с нуля, по убыванию, включительно. Годна только при len == 8, байтах 1/6/7 == 0,
+// from < last_record ЭТОГО сеанса и to <= from. last_record == 0 (нет сводки) — всегда отказ.
+bool radex_journal_records_cmd_ok(const uint8_t *cmd, size_t len, uint16_t last_record);
+// Белый список отправки: 47 / 81 ff / 82 ff дословно, 48 — через records_cmd_ok.
+bool radex_journal_cmd_allowed_ctx(const uint8_t *cmd, size_t len, uint16_t last_record);
+#define RADEX_J_MAX_REC 64   // жёсткий предел записей за сеанс
+// Диапазон всего журнала: from = last-1, to = 0; длиннее 64 — from..from-63 и *truncated.
+// false, если last_record == 0 (записей нет).
+bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *to, bool *truncated);
+void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from, uint16_t to);
+// Продолжать 82 ff: пока не пришла заглушка и записей меньше want.
+bool radex_journal_records_more(uint16_t got, uint16_t want, bool last_was_filler);
 // Значения CCCD 0x0013: включить notify в начале сеанса, выключить в конце (аудит 281-B F7).
 extern const uint8_t RADEX_J_CCCD_ON[2];    // 01 00
 extern const uint8_t RADEX_J_CCCD_OFF[2];   // 00 00
@@ -91,11 +105,16 @@ typedef struct {
     radex_journal_summary_t summary;
     uint8_t  n_summary_pkt;
     radex_journal_raw_t summary_pkt[RADEX_J_MAX_PKT];
+    uint16_t req_from, req_to;   // запрошенный диапазон индексов (0x48)
+    bool     truncated;          // журнал длиннее RADEX_J_MAX_REC
     uint8_t  n_records;
-    radex_journal_record_t records[RADEX_J_MAX_PKT];
-    uint8_t  n_record_pkt;
-    radex_journal_raw_t record_pkt[RADEX_J_MAX_PKT];
+    radex_journal_record_t records[RADEX_J_MAX_REC];
+    uint8_t  n_record_pkt;       // пакеты записей, включая заглушку
+    radex_journal_raw_t record_pkt[RADEX_J_MAX_REC + 1];
 } radex_journal_t;
 
+// Буфер JSON /api/journal: худший случай (64 записи, 65+8 пакетов по 32 байта, все float = -FLT_MAX)
+// пересчитывается хост-тестом test_json_capacity_64 — он же падает, если не влезает.
+#define RADEX_J_JSON_MAX 32768
 // JSON для GET /api/journal. Возвращает длину (без нуля) или -1 при нехватке буфера.
 int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *buf, size_t len);

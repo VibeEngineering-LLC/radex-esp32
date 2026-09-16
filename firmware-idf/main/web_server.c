@@ -13,6 +13,7 @@
 #include "radex_data.h"
 #include "ble_radex.h"
 #include "ble_radex_journal.h"   /* #RADEX-281 */
+#include "radex_journal_parse.h" /* RADEX_J_JSON_MAX */
 #include "ha_mqtt.h"
 #include "log_ring.h"
 #include "narodmon.h"
@@ -512,8 +513,11 @@ static esp_err_t handle_assess(httpd_req_t *req)
    N кругов: параметры 0x48 не поняты, а прибор держит за сессию лишь несколько
    ATT-операций (#RADEX-18) — авто-запуск рисковал бы доказанным кругом опроса. */
 static esp_err_t handle_journal_get(httpd_req_t *req) {
-    static char buf[4096];   /* static — см. шапку файла про однопоточный httpd */
-    int len = ble_radex_journal_json(buf, sizeof(buf));
+    /* 64 записи не влезают в 4 КБ: буфер один раз из PSRAM (httpd однопоточный, см. шапку) */
+    static char *buf = NULL;
+    if (!buf) buf = heap_caps_malloc(RADEX_J_JSON_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) { httpd_resp_send_500(req); return ESP_FAIL; }
+    int len = ble_radex_journal_json(buf, RADEX_J_JSON_MAX);
     if (len < 0) { httpd_resp_send_500(req); return ESP_FAIL; }
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, len);

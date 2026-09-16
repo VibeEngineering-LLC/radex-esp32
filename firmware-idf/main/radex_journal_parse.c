@@ -25,8 +25,47 @@ bool radex_journal_cmd_allowed(const uint8_t *cmd, size_t len)
     return false;
 }
 
+bool radex_journal_records_cmd_ok(const uint8_t *cmd, size_t len, uint16_t last_record)
+{
+    if (cmd == NULL || len != RADEX_J_CMD_LEN) return false;
+    if (cmd[0] != 0x48 || cmd[1] != 0x00 || cmd[6] != 0x00 || cmd[7] != 0x00) return false;
+    uint16_t from = (uint16_t)(cmd[2] | (cmd[3] << 8));
+    uint16_t to   = (uint16_t)(cmd[4] | (cmd[5] << 8));
+    if (from >= last_record) return false;   /* индекс вне журнала этого сеанса (и нет сводки) */
+    if (to > from) return false;
+    return true;
+}
+
+bool radex_journal_cmd_allowed_ctx(const uint8_t *cmd, size_t len, uint16_t last_record)
+{
+    if (cmd == NULL || len != RADEX_J_CMD_LEN) return false;
+    if (cmd[0] == 0x48) return radex_journal_records_cmd_ok(cmd, len, last_record);
+    return radex_journal_cmd_allowed(cmd, len) && cmd[0] != 0x48;
+}
+
 const uint8_t RADEX_J_CCCD_ON[2]  = {0x01, 0x00};
 const uint8_t RADEX_J_CCCD_OFF[2] = {0x00, 0x00};
+
+bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *to, bool *truncated)
+{
+    if (last_record == 0 || !from || !to || !truncated) return false;
+    *from = (uint16_t)(last_record - 1);
+    *truncated = last_record > RADEX_J_MAX_REC;
+    *to = *truncated ? (uint16_t)(*from - (RADEX_J_MAX_REC - 1)) : 0;
+    return true;
+}
+
+void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from, uint16_t to)
+{
+    const uint8_t b[RADEX_J_CMD_LEN] = { 0x48, 0x00, (uint8_t)from, (uint8_t)(from >> 8),
+                                         (uint8_t)to, (uint8_t)(to >> 8), 0x00, 0x00 };
+    memcpy(out, b, RADEX_J_CMD_LEN);
+}
+
+bool radex_journal_records_more(uint16_t got, uint16_t want, bool last_was_filler)
+{
+    return !last_was_filler && got < want;
+}
 
 bool radex_journal_cccd_allowed(const uint8_t *val, size_t len)
 {
@@ -157,6 +196,8 @@ int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *
     st[st_len] = '\0';
     if (!app(buf, len, &o, ",\"status\":\"%s\",\"finished_s\":%lu,\"mtu\":%u", st,
              (unsigned long)j->finished_s, (unsigned)j->mtu)) return -1;
+    if (!app(buf, len, &o, ",\"req_from\":%u,\"req_to\":%u,\"truncated\":%s", (unsigned)j->req_from,
+             (unsigned)j->req_to, j->truncated ? "true" : "false")) return -1;
 
     if (!app(buf, len, &o, ",\"summary\":")) return -1;
     if (!j->have_summary) {
@@ -177,7 +218,7 @@ int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *
     }
     if (!app(buf, len, &o, "]")) return -1;
 
-    uint8_t n_records = j->n_records > RADEX_J_MAX_PKT ? RADEX_J_MAX_PKT : j->n_records;
+    uint8_t n_records = j->n_records > RADEX_J_MAX_REC ? RADEX_J_MAX_REC : j->n_records;
     if (!app(buf, len, &o, ",\"records\":[")) return -1;
     for (size_t i = 0; i < n_records; ++i) {
         if (i > 0 && !app(buf, len, &o, ",")) return -1;
@@ -189,7 +230,7 @@ int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *
     }
     if (!app(buf, len, &o, "]")) return -1;
 
-    uint8_t n_record_pkt = j->n_record_pkt > RADEX_J_MAX_PKT ? RADEX_J_MAX_PKT : j->n_record_pkt;
+    uint8_t n_record_pkt = j->n_record_pkt > RADEX_J_MAX_REC + 1 ? RADEX_J_MAX_REC + 1 : j->n_record_pkt;
     if (!app(buf, len, &o, ",\"record_packets\":["))
         return -1;
     for (size_t i = 0; i < n_record_pkt; ++i) {

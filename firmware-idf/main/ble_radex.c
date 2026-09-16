@@ -17,6 +17,7 @@
 //  сбросом флага внутри bta_gattc_enable().
 // ==========================================================================
 #include "ble_radex.h"
+#include "ble_radex_journal.h"   /* #RADEX-281: журнал по NUS */
 #include <stdio.h>
 #include <string.h>
 #include <esp_bt.h>
@@ -448,6 +449,9 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
 
 static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param)
 {
+    /* #RADEX-281: модуль журнала сам отбирает свои события (запись в 0x0010/
+       CCCD 0x0013, notify 0x0012); опросу они не нужны — ниже их никто не ждёт. */
+    ble_radex_journal_on_gattc_event(event, param);
     switch (event) {
         case ESP_GATTC_REG_EVT: {
             s_gattc_if = gattc_if;
@@ -546,6 +550,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             // дальше тишина. Снимаем флаг на любом разрыве.
             s_poll_active = 0;
             s_handle_cursor = 0;
+            ble_radex_journal_on_disconnect();   /* #RADEX-281: сеанс журнала снимается в tick */
             TickType_t duration = (xTaskGetTickCount() - s_open_tick) * portTICK_PERIOD_MS;
             if (was_connected) {
                 ESP_LOGW(TAG, "разрыв соединения, reason=%d, длительность=%lu мс, разрывы=%lu",
@@ -705,6 +710,7 @@ void ble_radex_start(ble_radex_cb_t cb)
     security_params_init();
     tx_power_max();
 
+    ble_radex_journal_init();   /* #RADEX-281 */
     s_reconnect_sem = xSemaphoreCreateBinary();
     if (s_reconnect_sem == NULL) {
         ESP_LOGE(TAG, "ошибка создания семафора");
@@ -748,10 +754,16 @@ void ble_radex_start(ble_radex_cb_t cb)
         // #RADEX-7: очередной круг по расписанию. Условие проверяется на каждом
         // тике 100 мс — вкладывать его в счётчик печати нельзя (та же ловушка,
         // что описана выше про паузу MTU).
-        if (s_connected && !s_poll_active && s_next_poll_tick != 0 &&
+        // #RADEX-281: пока идёт сеанс журнала, круг не начинаем — одна GATT-операция
+        // за раз. Круг, наступивший во время сеанса, стартует сразу после него.
+        if (s_connected && !s_poll_active && !ble_radex_journal_busy() && s_next_poll_tick != 0 &&
             (int32_t)(xTaskGetTickCount() - s_next_poll_tick) >= 0) {
             start_polling("плановый опрос");
         }
+        // #RADEX-281: журнал — только в паузе между кругами и после первого круга
+        // соединения (s_mtu_state 1/2 = опрос уже запускался, согласование позади).
+        ble_radex_journal_tick(s_connected && !s_poll_active && (s_mtu_state == 1 || s_mtu_state == 2),
+                               s_gattc_if, s_conn_id, s_target_addr);
         // #RADEX-153b: проверяем по-прежнему раз в 10 с, но печатаем только при
         // изменении четвёрки либо по heartbeat. Маркер «(без изменений)»
         // отличает heartbeat от строки по событию.

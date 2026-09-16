@@ -12,6 +12,7 @@
 #include "net_config.h"
 #include "radex_data.h"
 #include "ble_radex.h"
+#include "ble_radex_journal.h"   /* #RADEX-281 */
 #include "ha_mqtt.h"
 #include "log_ring.h"
 #include "narodmon.h"
@@ -507,6 +508,25 @@ static esp_err_t handle_assess(httpd_req_t *req)
    определения был написан, но наружу не выводился: проверить его работу на
    живых данных было НЕЧЕМ. Механизм, чью работу нельзя наблюдать, нельзя и
    принять — отсюда маршрут. */
+/* #RADEX-281: журнал прибора по NUS. Чтение — только по POST /refresh, не раз в
+   N кругов: параметры 0x48 не поняты, а прибор держит за сессию лишь несколько
+   ATT-операций (#RADEX-18) — авто-запуск рисковал бы доказанным кругом опроса. */
+static esp_err_t handle_journal_get(httpd_req_t *req) {
+    static char buf[4096];   /* static — см. шапку файла про однопоточный httpd */
+    int len = ble_radex_journal_json(buf, sizeof(buf));
+    if (len < 0) { httpd_resp_send_500(req); return ESP_FAIL; }
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, len);
+}
+static esp_err_t handle_journal_refresh(httpd_req_t *req) {
+    ble_radex_journal_request();   /* исполнит задача BLE в паузе между кругами */
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "{\"accepted\":true,\"connected\":%s}",
+                     ble_radex_connected() ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, n);
+}
+
 static esp_err_t handle_cycle(httpd_req_t *req) {
     static char buf[192];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int len = poll_cycle_json(buf, sizeof(buf));
@@ -1567,6 +1587,8 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/assess", .method = HTTP_GET, .handler = handle_assess },
     { .uri = "/api/method/tables", .method = HTTP_GET, .handler = handle_method_tables },   /* #RADEX-225 */
     { .uri = "/api/cycle", .method = HTTP_GET, .handler = handle_cycle },
+    { .uri = "/api/journal", .method = HTTP_GET, .handler = handle_journal_get },            /* #RADEX-281 */
+    { .uri = "/api/journal/refresh", .method = HTTP_POST, .handler = handle_journal_refresh }, /* #RADEX-281 */
     { .uri = "/api/compact", .method = HTTP_POST, .handler = handle_compact },
     { .uri = "/api/reboot",  .method = HTTP_POST, .handler = handle_reboot },   /* #RADEX-148 */
     { .uri = "/api/tests",  .method = HTTP_GET, .handler = handle_tests_list },

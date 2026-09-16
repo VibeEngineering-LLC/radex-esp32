@@ -19,6 +19,9 @@
      #RADEX-124/125, не трогать). Фиолетовый — уже в палитре многосерийных
      линий «Графиков» (COLORS[4]='#A78BFA' в index.src.html), не новый оттенок. */
   --data-mean-alt:#A78BFA;
+  /* #RADEX-269, оператор 16.09: горизонталь СРЕДНЕЙ на «Показаниях» — голубая: не зелёный
+     радон, не красный норматив, не фиолетовая полоса/верхняя граница ДИ, не синий «Графиков». */
+  --data-mean-line:#22D3EE;
   --pad:10px;
   --safe-top:env(safe-area-inset-top);
   --safe-bottom:env(safe-area-inset-bottom);
@@ -147,7 +150,7 @@ a:hover{color:var(--ink);text-decoration:underline}
 .levels-now{left:45%;right:-4px;border-top:3px solid var(--ink);box-shadow:0 0 0 1px rgba(2,6,23,.7)}
 /* #RADEX-126: индикатор только на «Показаниях» — цвет вслед за
    --data-mean-alt, не за общим --data-mean (тот остаётся у «Графиков»). */
-.levels-mean{left:-4px;right:45%;border-top:3px solid var(--data-mean-alt);box-shadow:0 0 0 1px rgba(2,6,23,.7)}
+.levels-mean{left:-4px;right:45%;border-top:3px solid var(--data-mean-line);box-shadow:0 0 0 1px rgba(2,6,23,.7)}
 .levels-scale{position:relative;display:flex;flex-direction:column;justify-content:space-between;font-size:12px;color:var(--dim);white-space:nowrap}
 #levels-norm,#levels-green{position:absolute;left:0}
 #levels-green{color:var(--ok)}

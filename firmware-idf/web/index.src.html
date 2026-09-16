@@ -136,9 +136,9 @@
                названия» — легенда называет величины так же, как карточки. -->
           <span class="lg-data">Текущая ОА радона</span>
           <span class="lg-mean">Средняя ОА радона</span>
-          <!-- #RADEX-269, Цапалов п.3: фиолетовым рисуются ДВЕ линии — горизонталь средней
-               (drawMeanLine) и сходящаяся верхняя граница ДИ (confBand.upper); подписаны обе -->
-          <span class="lg-mean">Верхняя граница доверительного интервала среднегодовой ОА радона</span>
+          <!-- #RADEX-269, Цапалов п.3 + оператор 16.09: средняя — голубая (--data-mean-line),
+               фиолетовая сходящаяся кривая — верхняя граница ДИ (confBand.upper) -->
+          <span class="lg-upper">Верхняя граница доверительного интервала оцениваемой среднегодовой ОА радона</span>
           <span class="lg-limit">Норматив</span>
         </div>
           <div class="sub" id="chart_note" style="font-size:var(--fs-xs);margin-top:8px"></div>
@@ -4025,7 +4025,9 @@ function drawChart() {
 
     deferredMeanBadge = drawMeanLine(chartCtx, points,
       {leftMargin, rightMargin, topMargin, bottomMargin, width, height, minVal, maxVal, scale},
-      {mean: meanAltColor, band: meanAltColor},
+      /* #RADEX-269, оператор 16.09 «да»: горизонталь средней — своим цветом (--data-mean-line),
+         фиолетовой остаётся только сходящаяся верхняя граница ДИ */
+      {mean: getComputedStyle(document.documentElement).getPropertyValue('--data-mean-line').trim() || '#22D3EE', band: meanAltColor},
       { avoidBox: normBox, skipBadge: isMobileWidth, deferBadge: true });
   }
 

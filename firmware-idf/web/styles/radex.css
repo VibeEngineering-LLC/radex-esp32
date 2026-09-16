@@ -28,7 +28,8 @@
 .chart-legend .lg-data{--sw:var(--data-line)}
 /* #RADEX-126: единственный .chart-legend в разметке — на «Показаниях»,
    поэтому безопасно переключить именно эту легенду на --data-mean-alt. */
-.chart-legend .lg-mean{--sw:var(--data-mean-alt)}
+.chart-legend .lg-mean{--sw:var(--data-mean-line)}   /* #RADEX-269: средняя */
+.chart-legend .lg-upper{--sw:var(--data-mean-alt)}   /* #RADEX-269: верхняя граница ДИ */
 .chart-legend .lg-limit{--sw:var(--data-limit)}
 /* Норматив на графике — пунктир, мазок в легенде тоже. */
 .chart-legend .lg-limit::before{background:repeating-linear-gradient(90deg,var(--data-limit) 0 5px,transparent 5px 8px)}

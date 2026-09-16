@@ -127,14 +127,14 @@ static void ulk(void) { if (s_mtx) xSemaphoreGive(s_mtx); }
 static int j_next_step(int done_step, const char **why)
 {
     if (done_step == J_S_SUM_END) {
-        uint16_t from, to; bool tr;
+        uint16_t from, extra; bool tr;
         if (!s_work.have_summary) { *why = "no summary"; return -1; }   /* 48 без сводки не шлём */
-        if (!radex_journal_records_range(s_work.summary.last_record, &from, &to, &tr)) return J_S_OFF;
-        radex_journal_records_cmd_build(s_rec_cmd, from, to);
-        s_work.req_from = from; s_work.req_to = to; s_work.truncated = tr;
-        s_want = (uint16_t)(from - to + 1); s_next_sent = 0; s_last_filler = false;
-        ESP_LOGI(TAG, "записи: последняя №%u, запрашиваю индексы %u..%u (%u)%s", (unsigned)s_work.summary.last_record,
-                 (unsigned)from, (unsigned)to, (unsigned)s_want, tr ? ", журнал усечён до 64" : "");
+        if (!radex_journal_records_range(s_work.summary.last_record, &from, &extra, &tr)) return J_S_OFF;
+        radex_journal_records_cmd_build(s_rec_cmd, from, extra);
+        s_work.req_from = from; s_work.req_extra = extra; s_work.truncated = tr;
+        s_want = radex_journal_records_want(extra); s_next_sent = 0; s_last_filler = false;
+        ESP_LOGI(TAG, "записи: последняя №%u, запрашиваю 48 start=%u extra=%u (ждём %u)%s", (unsigned)s_work.summary.last_record,
+                 (unsigned)from, (unsigned)extra, (unsigned)s_want, tr ? ", журнал усечён до 64" : "");
         return done_step + 1;
     }
     if (done_step == J_S_REC_NEXT) {

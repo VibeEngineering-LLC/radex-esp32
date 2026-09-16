@@ -253,12 +253,29 @@ static void test_records_cmd_rejects_shape(void) {
 
 static void test_records_range_more(void) {
     uint16_t f = 1, t = 1; bool tr = true;
+    /* t = extra (число более старых записей) */
     CHECK(!radex_journal_records_range(0, &f, &t, &tr), "last=0: no range");
-    CHECK(radex_journal_records_range(10, &f, &t, &tr) && f == 9 && t == 0 && !tr, "last=10 -> 9..0");
-    CHECK(radex_journal_records_range(64, &f, &t, &tr) && f == 63 && t == 0 && !tr, "last=64 -> 63..0");
-    CHECK(radex_journal_records_range(100, &f, &t, &tr) && f == 99 && t == 36 && tr, "last=100 -> 99..36 truncated");
+    CHECK(radex_journal_records_range(11, &f, &t, &tr) && f == 10 && t == 10 && !tr, "last=11 -> start 10, extra 10");
+    CHECK(radex_journal_records_range(1, &f, &t, &tr) && f == 0 && t == 0 && !tr, "last=1 -> start 0, extra 0");
+    CHECK(radex_journal_records_range(64, &f, &t, &tr) && f == 63 && t == 63 && !tr, "last=64 -> extra 63");
+    CHECK(radex_journal_records_range(100, &f, &t, &tr) && f == 99 && t == 63 && tr, "last=100 -> extra 63 truncated");
     CHECK(radex_journal_records_more(1, 10, false) && !radex_journal_records_more(10, 10, false), "more until want");
     CHECK(!radex_journal_records_more(1, 10, true), "filler stops");
+}
+
+/* второй параметр = extra: (10,10) при last=11 — весь журнал; (10,11) — отказ */
+static void test_records_cmd_extra(void) {
+    const uint8_t all[8] = {0x48,0x00,0x0a,0x00,0x0a,0x00,0x00,0x00};
+    const uint8_t over[8] = {0x48,0x00,0x0a,0x00,0x0b,0x00,0x00,0x00};
+    CHECK(radex_journal_records_cmd_ok(all, 8, 11), "(10,10) at last=11 accepted");
+    CHECK(!radex_journal_records_cmd_ok(over, 8, 11), "(10,11) at last=11 rejected");
+}
+
+/* единственный тест на want = extra + 1 (мишень мутации #SA-3); плата: extra 0 -> 1 запись */
+static void test_records_want(void) {
+    CHECK(radex_journal_records_want(0) == 1, "extra 0 -> 1 record (board 16.09)");
+    CHECK(radex_journal_records_want(1) == 2, "extra 1 -> 2 records (phone capture)");
+    CHECK(radex_journal_records_want(63) == 64, "extra 63 -> 64");
 }
 
 static void test_cccd(void) {
@@ -377,6 +394,8 @@ int main(void) {
     RUN(test_records_cmd_from_ge_last);
     RUN(test_records_cmd_rejects_shape);
     RUN(test_records_range_more);
+    RUN(test_records_cmd_extra);
+    RUN(test_records_want);
     RUN(test_json_capacity_64);
 
     printf("итого: красных тестов %d из %d\n", g_fail_tests, g_total_tests);

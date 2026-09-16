@@ -46,19 +46,24 @@ bool radex_journal_cmd_allowed_ctx(const uint8_t *cmd, size_t len, uint16_t last
 const uint8_t RADEX_J_CCCD_ON[2]  = {0x01, 0x00};
 const uint8_t RADEX_J_CCCD_OFF[2] = {0x00, 0x00};
 
-bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *to, bool *truncated)
+bool radex_journal_records_range(uint16_t last_record, uint16_t *from, uint16_t *extra, bool *truncated)
 {
-    if (last_record == 0 || !from || !to || !truncated) return false;
+    if (last_record == 0 || !from || !extra || !truncated) return false;
     *from = (uint16_t)(last_record - 1);
     *truncated = last_record > RADEX_J_MAX_REC;
-    *to = *truncated ? (uint16_t)(*from - (RADEX_J_MAX_REC - 1)) : 0;
+    *extra = *truncated ? (uint16_t)(RADEX_J_MAX_REC - 1) : *from;
     return true;
 }
 
-void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from, uint16_t to)
+uint16_t radex_journal_records_want(uint16_t extra)
+{
+    return (uint16_t)(extra + 1);   /* запрошенная запись + extra более старых */
+}
+
+void radex_journal_records_cmd_build(uint8_t out[RADEX_J_CMD_LEN], uint16_t from, uint16_t extra)
 {
     const uint8_t b[RADEX_J_CMD_LEN] = { 0x48, 0x00, (uint8_t)from, (uint8_t)(from >> 8),
-                                         (uint8_t)to, (uint8_t)(to >> 8), 0x00, 0x00 };
+                                         (uint8_t)extra, (uint8_t)(extra >> 8), 0x00, 0x00 };
     memcpy(out, b, RADEX_J_CMD_LEN);
 }
 
@@ -196,8 +201,8 @@ int radex_journal_json(const radex_journal_t *j, bool busy, bool pending, char *
     st[st_len] = '\0';
     if (!app(buf, len, &o, ",\"status\":\"%s\",\"finished_s\":%lu,\"mtu\":%u", st,
              (unsigned long)j->finished_s, (unsigned)j->mtu)) return -1;
-    if (!app(buf, len, &o, ",\"req_from\":%u,\"req_to\":%u,\"truncated\":%s", (unsigned)j->req_from,
-             (unsigned)j->req_to, j->truncated ? "true" : "false")) return -1;
+    if (!app(buf, len, &o, ",\"req_from\":%u,\"req_extra\":%u,\"truncated\":%s", (unsigned)j->req_from,
+             (unsigned)j->req_extra, j->truncated ? "true" : "false")) return -1;
 
     if (!app(buf, len, &o, ",\"summary\":")) return -1;
     if (!j->have_summary) {

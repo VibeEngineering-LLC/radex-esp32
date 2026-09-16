@@ -13,6 +13,7 @@
 #include "radex_data.h"
 #include "ble_radex.h"
 #include "ble_radex_journal.h"   /* #RADEX-281 */
+#include "target_switch.h"       /* #RADEX-283 */
 #include "radex_journal_parse.h" /* RADEX_J_JSON_MAX */
 #include "ha_mqtt.h"
 #include "log_ring.h"
@@ -1526,11 +1527,14 @@ static esp_err_t handle_target(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty body");
     body[len] = 0;
 
-    if (!ble_radex_set_target(body))
-        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad mac");
-
+    /* #RADEX-283: смена прибора сама завершает и сохраняет идущий замер; тот же MAC — без перезапуска */
+    char resp[256];
+    bool restart = false;
+    int code = radex_target_switch(body, resp, sizeof(resp), &restart);
+    if (code != 200) httpd_resp_set_status(req, "400 Bad Request");
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, "{\"ok\":true,\"restart_ms\":1500}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_sendstr(req, resp);
+    if (!restart) return ESP_OK;
 
     const esp_timer_create_args_t a = { .callback = restart_cb, .name = "restart" };
     esp_timer_handle_t th;

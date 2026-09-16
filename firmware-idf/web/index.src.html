@@ -1416,8 +1416,13 @@
         method: 'POST',
         body: mac
       })
-      .then(() => {
-        alert('Прибор выбран, плата перезагружается');
+      .then(r => r.json()).catch(() => ({}))
+      .then(j => {
+        /* #RADEX-283: плата сама сохраняет замер прежнего прибора; тот же MAC — без перезагрузки */
+        if (j && j.changed === false) { alert('Это уже выбранный прибор — ничего не изменено'); return; }
+        const saved = j && j.saved ? `\nЗамер прежнего прибора сохранён: ${j.saved.label} (${j.saved.points} изм.)` : '';
+        const fresh = j && j.new_test_start ? '\nНачат новый замер.' : '';
+        alert('Прибор выбран, плата перезагружается' + saved + fresh);
         setTimeout(updateAllData, 5000);
       });
     }

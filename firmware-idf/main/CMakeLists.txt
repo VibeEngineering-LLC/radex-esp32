@@ -20,6 +20,8 @@ idf_component_register(
         "radex_journal_parse.c"   # #RADEX-281: чистый разбор, хост-тест test/host
         "ble_radex_journal.c"     # #RADEX-281: сеанс чтения журнала по NUS
         "radex_journal_track.c"   # #RADEX-281: привязка квитанций/notify к шагу, хост-тест
+        "target_label.c"          # #RADEX-283: имя замера и сравнение MAC, хост-тест
+        "target_switch.c"         # #RADEX-283: смена прибора с сохранением замера
     INCLUDE_DIRS "."
     EMBED_FILES
         "../web/index.html"

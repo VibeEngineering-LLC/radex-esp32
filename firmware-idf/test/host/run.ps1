@@ -13,4 +13,9 @@ gcc $W -o /tmp/tjc test/host/test_journal_calib.c && /tmp/tjc || f=$((f+1))
 gcc $W -o /tmp/thc test/host/test_http_cache.c && /tmp/thc || f=$((f+1))
 exit $f
 '@
-exit $LASTEXITCODE
+$f = $LASTEXITCODE
+# R7: JS host tests (page-source tests) run on the host node, not in the docker image.
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+node "$here/test_current_session.js" | Out-Host; if ($LASTEXITCODE -ne 0) { $f += $LASTEXITCODE }
+node "$here/test_journal_poll.js" | Out-Host; if ($LASTEXITCODE -ne 0) { $f += $LASTEXITCODE }
+exit $f

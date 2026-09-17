@@ -1097,7 +1097,7 @@
     }
 
     let diagTimer = null;
-    async function diagTick() {
+    async function diagTick(forceJournal) {
       try {
         const r = await fetch('/api/data', {cache: 'no-store'});
         if (!r.ok) return;
@@ -1105,16 +1105,32 @@
         window.__dataFetchedAt = Date.now();
         updateSystemDisplay();
       } catch (e) { /* следующий тик через 3 с; общий круг тоже продолжает идти */ }
-      journalTick();   /* #RADEX-292: опрос сеанса журнала тем же интервалом, вкладка не блокируется */
+      journalTick(forceJournal);   /* #RADEX-292; force при открытии вкладки — не ждать до 10 тиков (R4) */
     }
 
     /* #RADEX-292: /api/journal — только чтение (не блокирует интерфейс); busy/pending
        гасят кнопку, чтобы повторный клик не ловил 429 молча (429 — уже готовое поведение
        backend, #RADEX-291-класс, 3df2c6f). Сохранение записей в замер — НЕ делается,
        отдельная задача (#RADEX-281 «журнал → флеш/графики»). */
-    async function journalTick() {
+    /* #RADEX-294 (O4): пока сеанс чтения журнала НЕ идёт, ответ /api/journal не
+       меняется — опрашивать его раз в 3 секунды незачем. В покое берём каждый
+       десятый тик (раз в 30 с), в сеансе (busy/pending) — каждый, чтобы таблица
+       наполнялась на глазах. Чистая функция вынесена, чтобы её проверял
+       test/host/test_journal_poll.js. */
+    function journalTickDue(active, n) { return !!active || (n % 10) === 0; }
+    /* #SA-верификация 17.09 (D1/D4/R1): force — обойти гейт периодичности для
+       ЯВНОГО события (кнопка, сохранение, открытие вкладки), а не ждать до 10
+       периодических тиков; journalFetching — не запускать fetch поверх идущего
+       (ответ /api/journal до 32 КБ, конкурирует с BLE-сеансом на той же плате). */
+    let journalActive = false, journalTickN = 0, journalFetching = false;
+    async function journalTick(force) {
+      if (!force && !journalTickDue(journalActive, journalTickN++)) return;
+      if (journalFetching) return;
+      journalFetching = true;
       let j = null;
       try { j = await (await fetch('/api/journal', {cache: 'no-store'})).json(); } catch (e) { /* пропускаем тик */ }
+      journalFetching = false;
+      journalActive = !!(j && (j.busy || j.pending));   /* #RADEX-294 (O4) */
       renderJournalTable(j);
       const btn = document.getElementById('btn-journal-refresh');
       if (btn) btn.disabled = !!(j && (j.busy || j.pending));
@@ -1139,7 +1155,7 @@
     }
     function diagStart() {
       if (diagTimer) return;
-      diagTick();
+      diagTick(true);   /* R4: заход на вкладку — журнал читаем сразу, не до 10×3с */
       diagTimer = setInterval(diagTick, 3000);
     }
     function diagStop() {
@@ -1148,18 +1164,32 @@
       diagTimer = null;
     }
 
-    function updateAllData() {
-      Promise.all([
-        fetch('/api/data', {cache: 'no-store'}),
-        fetch('/api/system', {cache: 'no-store'}),
-        fetch('/api/history', {cache: 'no-store'}),
-        fetch('/api/stats', {cache: 'no-store'}),
-        fetch('/api/ha', {cache: 'no-store'}),
-        fetch('/api/narodmon', {cache: 'no-store'}),
-        fetch('/api/scan', {cache: 'no-store'})
-      ])
-      .then(responses => Promise.all(responses.map(r => r.json())))
-      .then(([dataRes, systemRes, historyRes, statsRes, haRes, nmRes, scanRes]) => {
+    /* #RADEX-294 (O1): пачка идёт ПОСЛЕДОВАТЕЛЬНО и не больше одного круга за раз.
+       Причина замерена, а не предположена: httpd платы — одна задача (web_server.c,
+       max_open_sockets=7), семь одновременных запросов встают в очередь к ней же,
+       вместе с отдачей самой страницы; при быстрых перезагрузках страница получена
+       2 раза из 10, max 82.8 с (замер «до», probe_before_reload10.json). Очередь
+       браузера дешевле очереди в плате: последовательный круг занимает столько же
+       суммарного времени платы, но не блокирует выдачу страницы целиком. Флаг
+       updateBusy нужен отдельно: круг может не уложиться в 30 с, и тогда таймер
+       наложил бы второй круг на неоконченный первый.
+       #SA-верификация 17.09 (D2): «занят — выйти» ронял 10 адресных вызовов
+       «перечитать сейчас» (старт/конец теста, возврат вкладки из фона и др.) —
+       вместо этого занятый вызов взводит updateWants, а закончившийся круг
+       запускает ровно один добавочный, не дожидаясь 30-секундного таймера. */
+    let updateBusy = false, updateWants = false;
+    async function updateAllData() {
+      if (updateBusy) { updateWants = true; return; }
+      updateBusy = true;
+      updateWants = false;
+      try {
+        const dataRes    = await (await fetch('/api/data', {cache: 'no-store'})).json();
+        const systemRes  = await (await fetch('/api/system', {cache: 'no-store'})).json();
+        const historyRes = await (await fetch('/api/history', {cache: 'no-store'})).json();
+        const statsRes   = await (await fetch('/api/stats', {cache: 'no-store'})).json();
+        const haRes      = await (await fetch('/api/ha', {cache: 'no-store'})).json();
+        const nmRes      = await (await fetch('/api/narodmon', {cache: 'no-store'})).json();
+        const scanRes    = await (await fetch('/api/scan', {cache: 'no-store'})).json();
         data = dataRes;
         window.__dataFetchedAt = Date.now();   /* #RADEX-153: момент ответа, не запроса */
         system = systemRes;
@@ -1233,13 +1263,15 @@
         updateDataDisplay();
         methodTick();
         updateSystemDisplay();
-        updateCycleDisplay();
+        await updateCycleDisplay();   /* #RADEX-294 (O1): внутри свои запросы — они тоже в очередь, а не поверх круга */
         updateStatsDisplay();
         updateScanDisplay(scanRes);
-      })
-      .catch(err => {
+      } catch (err) {
         console.error('Ошибка обновления данных:', err);
-      });
+      } finally {
+        updateBusy = false;
+        if (updateWants) { updateWants = false; updateAllData(); }   /* D2: догнать пропущенный адресный вызов */
+      }
     }
 
     function updateDataDisplay() {
@@ -1317,6 +1349,29 @@
       return Object.assign(cycleFromPoints(j.points, cs.from), { current: cs.from > 0, step: j.step || 1 });
     }
 
+    /* #RADEX-294 (O3): результат cycleFromCurrentTest() кэшируется. Он стоит платы
+       дорого — /api/history/range?max=1000 занимал 151 мс при 2 вызовах (счётчик
+       perf.uris), плюс при холодном кэше ещё /api/tests (1300 мс). А меняться чаще,
+       чем появляется новая точка, он не может: промежутки считаются по точкам
+       истории, а новая точка приходит раз в 10-60 минут. Признак новой точки —
+       смена radon_last в /api/data (повторы в историю не пишутся). Верхняя граница
+       5 минут оставлена на случай, когда значение повторилось, а точки прибавились.
+       #SA-верификация 17.09 (D3): radon_last один не разграничивает сессии — старт/
+       конец замера меняют cs.from (currentSessionFrom), а radon_last может не
+       смениться ещё несколько минут. Ключ кэша обязан включать оба входа. */
+    let cycleCache = null, cycleCacheAt = 0, cycleCacheKey = null;
+    async function cycleCached() {
+      const now = Date.now();
+      const last = (data && data.radon_last !== undefined) ? data.radon_last : null;
+      const cs = currentSessionFrom(testsCache, Math.floor(now / 1000));
+      const key = last + '|' + cs.from;
+      if (cycleCache && key === cycleCacheKey && (now - cycleCacheAt) < 300000) return cycleCache;
+      cycleCache = await cycleFromCurrentTest();
+      cycleCacheAt = now;
+      cycleCacheKey = key;
+      return cycleCache;
+    }
+
     /* #RADEX-67: расчётный интервал замера прибора. Прибор не сообщает свой цикл,
        он определяется по промежуткам между СМЕНАМИ значения (повторы в историю
        не пишутся). Пока промежутков мало, значение не устойчиво — и об этом надо
@@ -1330,7 +1385,7 @@
         const mc = await r.json();
         /* #RADEX-287: /api/cycle — только ручная уставка; автоматический цикл платы копил
            кольцо промежутков без отсечки по замеру/прибору (poll_cycle.c:216-224) и NVS cyauto. */
-        const c = mc.manual ? mc : await cycleFromCurrentTest();
+        const c = mc.manual ? mc : await cycleCached();   /* #RADEX-294 (O3) */
         const m = Number(c.minutes) || 0;
         const scope = c.current ? ' текущего замера' : ' (замер не идёт — по последним 6 ч)';
         if (c.manual) {
@@ -1539,7 +1594,8 @@
           return;
         }
       } catch (e) { alert('не удалось запросить журнал: ' + e.message); return; }
-      journalTick();
+      journalActive = true;   /* #RADEX-294 (O4): сеанс начат — опрашиваем каждый тик, не дожидаясь ответа с busy */
+      journalTick(true);   /* прочитать сразу, не ждать гейта (D1-класс) */
     });
 
     /* #RADEX-293: запись в radon.csv — только по явному нажатию, никогда
@@ -1556,7 +1612,7 @@
           : 'не удалось сохранить';
       } catch (e) { if (note) note.textContent = 'не удалось сохранить: ' + e.message; return; }
       journalLastFinishedS = null;   /* пересчитать N: только что сохранённое больше не «новое» */
-      journalTick();
+      journalTick(true);   /* D1/D4: гейт периодичности иначе гасит пересчёт кнопки в 9 случаях из 10 */
     });
 
     function selectDevice(mac) {

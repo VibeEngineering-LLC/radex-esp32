@@ -18,7 +18,6 @@
 #include <stdint.h>
 #include <time.h>
 #include "radex_journal_parse.h"   /* #RADEX-293: radex_journal_t для journal_preview/save */
-#include "perf_stats.h"            /* #RADEX-294: perf_acc_t */
 
 /**
  * Структура для хранения статистики за период.
@@ -103,8 +102,6 @@ bool radon_stats_mutex_create(void);   /* зовётся из radon_stats_init()
 bool radon_stats_lock(uint32_t timeout_ms);
 void radon_stats_unlock(void);
 uint32_t radon_stats_lock_timeouts(void);   /* диагностика, в норме 0 */
-/* #RADEX-294: время ожидания мьютекса (все взятия, из любых задач) — копия под спин-блокировкой. */
-void radon_stats_lock_wait_get(perf_acc_t *out);
 
 /* #RADEX-172, вторая половина решения. Держать мьютекс всю потоковую отдачу
    (export/history_range) НЕЛЬЗЯ — измерено 01.09.2026: на файле 188 КБ и

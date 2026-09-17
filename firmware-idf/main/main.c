@@ -6,7 +6,6 @@
 //  своей задачей и переподключается сам.
 // ══════════════════════════════════════════════════════════════════════════
 #include "net_config.h"
-#include "boot_info.h"   /* #RADEX-294 */
 #include "ble_radex.h"
 #include "radex_data.h"
 #include "ha_mqtt.h"
@@ -209,7 +208,6 @@ static void publish_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(30000));
         ha_mqtt_publish();
         narodmon_publish();   // свой срок отправки Народмон считает сам
-        boot_info_tick();     /* #RADEX-294: uptime в NVS, сам ограничивает частоту */
     }
 }
 
@@ -221,7 +219,6 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-    boot_info_init();   /* #RADEX-294: сразу после NVS — прошлый uptime ещё не перезаписан */
 
     // Перехват лога в память — ДО остальных подсистем, иначе их собственные
     // сообщения о запуске в браузере не увидеть. Ровно этой слепоты стоила

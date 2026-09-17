@@ -553,7 +553,10 @@ static esp_err_t handle_journal_refresh(httpd_req_t *req) {
 
 /* #RADEX-293: (а) предпросмотр — считает НОВЫЕ точки, ничего не пишет. */
 static esp_err_t handle_journal_preview(httpd_req_t *req) {
-    radex_journal_t j;
+    /* #RADEX-293 аудит находка 1: 4376 байт (sizeof, измерено) — на стек httpd
+       (6144 байт) не кладём, как и остальные большие буферы файла (#RADEX-170);
+       static безопасен — httpd однопоточный (см. шапку файла), гонки нет. */
+    static radex_journal_t j;
     if (!ble_radex_journal_get_result(&j)) return httpd_resp_send_500(req);
     /* #RADEX-293: часы шлюза на момент ЗАВЕРШЕНИЯ сеанса (j.finished_unix),
        не на момент этого запроса — иначе задержка до клика сдвинула бы калибровку. */
@@ -569,7 +572,7 @@ static esp_err_t handle_journal_preview(httpd_req_t *req) {
 /* (б) сохранение — отдельная явная кнопка: запись в историю необратима,
    автоматически после чтения журнала не делается (#RADEX-293). */
 static esp_err_t handle_journal_save(httpd_req_t *req) {
-    radex_journal_t j;
+    static radex_journal_t j;   /* #RADEX-293 аудит находка 1: см. handle_journal_preview */
     if (!ble_radex_journal_get_result(&j)) return httpd_resp_send_500(req);
     int n = radon_stats_journal_save(&j, j.finished_unix);   /* #RADEX-293: см. handle_journal_preview */
     char buf[96];

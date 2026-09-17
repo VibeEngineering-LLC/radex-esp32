@@ -175,9 +175,11 @@ int radon_stats_method_tables_json(char *buf, size_t len)
     return n;
 }
 
-// Проверка на корректность времени
+/* Проверка на корректность времени. #RADEX-293 аудит находка 2: границы (нижняя и
+   верхняя) вынесены в journal_calib.h (radex_time_valid) — одна точка истины и для
+   обычных точек истории, и для калибровки журнала (см. комментарий там). */
 static bool is_valid_time(time_t ts) {
-    return ts >= 1700000000; // после 2023 года
+    return radex_time_valid(ts) != 0;
 }
 
 // Инициализация файловой системы и создание заголовка файла
@@ -1642,15 +1644,21 @@ static int radon_stats_journal_apply_locked(const radex_journal_t *j, time_t boa
 
     int64_t offset = radex_journal_calib_offset(board_unix_now, j->summary.time_raw);
     uint8_t n_rec = j->n_records > RADEX_J_MAX_REC ? RADEX_J_MAX_REC : j->n_records;
-    time_t cand[RADEX_J_MAX_REC], cand_min = 0, cand_max = 0;
+    /* #RADEX-293 аудит находка 1: массивы — static, не на стек httpd (см. #RADEX-170,
+       web_server.c). Безопасно: функция вызывается только из radon_stats_journal_preview/
+       save, обе — под radon_stats_lock() (взаимное исключение), и только из httpd-задачи
+       (однопоточный сервер) — второго одновременного вызова быть не может. */
+    static time_t cand[RADEX_J_MAX_REC];
+    time_t cand_min = 0, cand_max = 0;
     for (uint8_t i = 0; i < n_rec; i++) {
         cand[i] = radex_journal_calib_abs(j->records[i].time_raw, offset);
         if (i == 0 || cand[i] < cand_min) cand_min = cand[i];
         if (i == 0 || cand[i] > cand_max) cand_max = cand[i];
     }
 
-    time_t existing[RADEX_JOURNAL_EXISTING_MAX];
+    static time_t existing[RADEX_JOURNAL_EXISTING_MAX];   /* #RADEX-293 аудит находка 1 */
     size_t n_existing = 0;
+    bool existing_truncated_logged = false;
     FILE *f = fopen(filename, "r");
     if (f) {
         char line[128];
@@ -1660,7 +1668,17 @@ static int radon_stats_journal_apply_locked(const radex_journal_t *j, time_t boa
             if (!radon_csv_parse(line, &row) || !is_valid_time(row.ts)) continue;
             if (row.ts < cand_min - RADEX_JOURNAL_DEDUP_WINDOW_S ||
                 row.ts > cand_max + RADEX_JOURNAL_DEDUP_WINDOW_S) continue;
-            if (n_existing < RADEX_JOURNAL_EXISTING_MAX) existing[n_existing++] = row.ts;
+            if (n_existing < RADEX_JOURNAL_EXISTING_MAX) {
+                existing[n_existing++] = row.ts;
+            } else if (!existing_truncated_logged) {
+                /* #RADEX-293 аудит находка 3: молчаливая обрезка — громкий лог (один раз на
+                   сеанс, не на строку) вместо тихой деградации (IRON MODE #EVAL-1); при
+                   текущей частоте записи (10-60 мин) не достигается (~65 точек в окне из
+                   64 записей), но если появится более частая запись — 128 может не хватить. */
+                ESP_LOGW(TAG, "журнал: окно дедупа обрезано по %d точкам — возможны повторные записи",
+                         RADEX_JOURNAL_EXISTING_MAX);
+                existing_truncated_logged = true;
+            }
         }
         fclose(f);
     }

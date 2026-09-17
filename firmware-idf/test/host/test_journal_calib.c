@@ -48,6 +48,14 @@ int main(void)
     TEST("test_candidate_near_gap_edge_is_new",
          !radex_journal_dedup_covered(existing, n, 1002395 + 181, 180));
 
+    /* #RADEX-293 аудит находка 2: верхняя граница валидности часов шлюза — один
+       аномальный board_unix_now иначе калибрует и молча пишет до 64 точек разом. */
+    TEST("test_time_valid_within_bounds",
+         radex_time_valid(1700000000) && radex_time_valid(1789600000));
+    TEST("test_time_valid_rejects_below_min", !radex_time_valid(1699999999));
+    TEST("test_time_valid_accepts_at_max", radex_time_valid(RADON_TIME_MAX));
+    TEST("test_time_valid_rejects_far_future", !radex_time_valid(RADON_TIME_MAX + 1));
+
     printf("итого (journal_calib): красных тестов %d из %d\n", fail_tests, total_tests);
     return fail_tests ? 1 : 0;
 }

@@ -1562,6 +1562,8 @@ int radon_stats_assess_json(char *buf, size_t len, time_t from, time_t to,
 
 static SemaphoreHandle_t s_mtx = NULL;
 static uint32_t s_lock_timeouts = 0;
+static perf_acc_t s_lock_wait;   /* #RADEX-294 */
+static portMUX_TYPE s_lock_wait_mux = portMUX_INITIALIZER_UNLOCKED;
 
 bool radon_stats_mutex_create(void)
 {
@@ -1583,7 +1585,13 @@ bool radon_stats_lock(uint32_t timeout_ms)
     if (!s_mtx) {
         return false;
     }
-    if (xSemaphoreTakeRecursive(s_mtx, pdMS_TO_TICKS(timeout_ms)) == pdTRUE) {
+    int64_t t0 = esp_timer_get_time();
+    bool got = xSemaphoreTakeRecursive(s_mtx, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    uint32_t waited = perf_ms_between(t0, esp_timer_get_time());
+    portENTER_CRITICAL(&s_lock_wait_mux);   /* пишут BLE-задача и httpd */
+    perf_acc_add(&s_lock_wait, waited);
+    portEXIT_CRITICAL(&s_lock_wait_mux);
+    if (got) {
         return true;
     }
     s_lock_timeouts++;
@@ -1601,6 +1609,13 @@ void radon_stats_unlock(void)
 uint32_t radon_stats_lock_timeouts(void)
 {
     return s_lock_timeouts;
+}
+
+void radon_stats_lock_wait_get(perf_acc_t *out)
+{
+    portENTER_CRITICAL(&s_lock_wait_mux);
+    *out = s_lock_wait;
+    portEXIT_CRITICAL(&s_lock_wait_mux);
 }
 
 /* #RADEX-172: поколение файла. Увеличивается ТОЛЬКО там, где файл

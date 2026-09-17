@@ -1,6 +1,7 @@
 #pragma once
 #include <stdbool.h>
 #include "esp_http_server.h"
+#include "perf_stats.h"   // #RADEX-294
 
 // HEAVY HTTP lane: concurrency=1. LIVE endpoints must not call these.
 // Busy → short 503 + Retry-After (socket freed immediately).
@@ -24,3 +25,6 @@ bool http_io_gate_enter_or_503(httpd_req_t *req);
 bool http_io_gate_enter_wait_or_503(httpd_req_t *req, uint32_t wait_ms);
 
 uint32_t http_io_gate_reject_count(void);
+
+// #RADEX-294: время ожидания слота (enter_or_503 / enter_wait_or_503), копия под спин-блокировкой.
+void http_io_gate_wait_get(perf_acc_t *out);

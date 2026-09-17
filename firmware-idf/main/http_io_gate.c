@@ -1,5 +1,6 @@
 #include "http_io_gate.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <stdio.h>
@@ -11,6 +12,14 @@ static SemaphoreHandle_t s_slot;      // binary: taken = HEAVY in progress
 static portMUX_TYPE s_spin = portMUX_INITIALIZER_UNLOCKED;
 static int s_waiters;
 static uint32_t s_rejects;
+static perf_acc_t s_wait;   /* #RADEX-294: ожидание слота, под s_spin */
+
+void http_io_gate_wait_get(perf_acc_t *out)
+{
+    portENTER_CRITICAL(&s_spin);
+    *out = s_wait;
+    portEXIT_CRITICAL(&s_spin);
+}
 
 void http_io_gate_init(void)
 {
@@ -67,7 +76,12 @@ static bool gate_enter_common(httpd_req_t *req, uint32_t wait_ms)
     s_waiters++;
     portEXIT_CRITICAL(&s_spin);
 
+    int64_t t0 = esp_timer_get_time();
     bool got = s_slot && xSemaphoreTake(s_slot, pdMS_TO_TICKS(wait_ms)) == pdTRUE;
+    uint32_t waited = perf_ms_between(t0, esp_timer_get_time());
+    portENTER_CRITICAL(&s_spin);   /* #RADEX-294 */
+    perf_acc_add(&s_wait, waited);
+    portEXIT_CRITICAL(&s_spin);
     if (got) {
         portENTER_CRITICAL(&s_spin);
         s_waiters--;

@@ -38,6 +38,10 @@
 #include <esp_bt.h>              // мощность передатчика BLE — спрашиваем у чипа
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>              /* #RADEX-294: perf_put */
+#include <inttypes.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>       /* xTaskGetHandle, uxTaskGetStackHighWaterMark */
 #include <stdlib.h>
 #include <math.h>   /* isnan в разборе истории */
 
@@ -72,6 +76,9 @@ static const char *TAG = "web";
    который и вешал плату, а все браузеры gzip шлют (curl — с --compressed). */
 #include "http_cache.h"
 #include "../web/index_etag.h"
+#include "perf_stats.h"
+
+static uint32_t s_root_304, s_root_406;   /* #RADEX-294: только задача httpd */
 
 static esp_err_t handle_root(httpd_req_t *req)
 {
@@ -84,12 +91,14 @@ static esp_err_t handle_root(httpd_req_t *req)
     /* TRUNC у If-None-Match — заголовок длиннее буфера: считаем «не совпал». */
     if (httpd_req_get_hdr_value_str(req, "If-None-Match", hdr, sizeof(hdr)) == ESP_OK
         && etag_match(hdr, RADEX_PAGE_ETAG)) {
+        s_root_304++;
         httpd_resp_set_status(req, "304 Not Modified");
         return httpd_resp_send(req, NULL, 0);
     }
     /* TRUNC у Accept-Encoding — разбираем уцелевшее начало. */
     esp_err_t r = httpd_req_get_hdr_value_str(req, "Accept-Encoding", hdr, sizeof(hdr));
     if ((r != ESP_OK && r != ESP_ERR_HTTPD_RESULT_TRUNC) || !accept_gzip(hdr)) {
+        s_root_406++;
         httpd_resp_set_status(req, "406 Not Acceptable");
         httpd_resp_set_type(req, "text/plain");
         return httpd_resp_sendstr(req, "gzip required (curl --compressed)");
@@ -1490,6 +1499,8 @@ static esp_err_t handle_history_import(httpd_req_t *req)
     return rc;
 }
 
+static int perf_json(char *buf, size_t size);   /* #RADEX-294: после таблицы URI */
+
 static esp_err_t handle_system(httpd_req_t *req)
 {
     const esp_app_desc_t *app = esp_app_get_description();
@@ -1558,8 +1569,15 @@ static esp_err_t handle_system(httpd_req_t *req)
         (unsigned)radon_stats_lock_timeouts(),
         dev_mac, sta_mac);
     if (n < 0 || n >= (int)sizeof(buf)) return httpd_resp_send_500(req);
+    /* #RADEX-294: "perf" дописывается кусками — в 512 байт buf он не входит. */
+    static char perf[4096];   /* static — #RADEX-170 */
+    int pn = perf_json(perf, sizeof(perf));
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, buf, n);
+    if (httpd_resp_send_chunk(req, buf, n - 1) != ESP_OK) return ESP_FAIL;   /* без '}' */
+    httpd_resp_sendstr_chunk(req, ",\"perf\":");
+    httpd_resp_send_chunk(req, pn > 0 ? perf : "null", pn > 0 ? pn : 4);
+    httpd_resp_sendstr_chunk(req, "}");
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 static esp_err_t handle_health(httpd_req_t *req)
@@ -1700,6 +1718,82 @@ static const httpd_uri_t s_uris[] = {
 };
 #define URI_COUNT (sizeof(s_uris) / sizeof(s_uris[0]))
 
+/* #RADEX-294: счётчики производительности, выдача — объект "perf" в /api/system
+   (новый URI не заводим: лимит обработчиков, P-040). s_uri_perf пишет perf_wrap
+   и читает handle_system — обе в задаче httpd, а она одна и async-обработчиков
+   нет (#RADEX-170), поэтому без блокировки. Ожидания мьютекса истории и полосы
+   I/O пишут и чужие задачи: их копии берутся под спин-блокировкой модулей. */
+static perf_acc_t s_uri_perf[URI_COUNT];
+
+static esp_err_t perf_wrap(httpd_req_t *req)
+{
+    size_t i = (size_t)(intptr_t)req->user_ctx;
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t r = s_uris[i].handler(req);
+    perf_acc_add(&s_uri_perf[i], perf_ms_between(t0, esp_timer_get_time()));
+    return r;
+}
+
+__attribute__((format(printf, 4, 5)))
+static bool perf_put(char *buf, size_t size, size_t *off, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *off, size - *off, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= size - *off) return false;
+    *off += (size_t)n;
+    return true;
+}
+
+static bool perf_put_acc(char *buf, size_t size, size_t *off, const char *key, const perf_acc_t *a)
+{
+    if (!perf_put(buf, size, off, ",\"%s\":", key)) return false;
+    int n = perf_acc_json(buf + *off, size - *off, a);
+    if (n < 0) return false;
+    *off += (size_t)n;
+    return true;
+}
+
+/* Остаток стека в байтах (в ESP-IDF StackType_t — байт); -1, если задачи нет. */
+static int perf_stack_free(const char *task)
+{
+    TaskHandle_t h = xTaskGetHandle(task);
+    return h ? (int)uxTaskGetStackHighWaterMark(h) : -1;
+}
+
+static int perf_json(char *buf, size_t size)
+{
+    size_t off = 0;
+    bool first = true;
+    if (!perf_put(buf, size, &off, "{\"uris\":[")) return -1;
+    for (size_t i = 0; i < URI_COUNT; i++) {
+        const perf_acc_t *a = &s_uri_perf[i];
+        if (a->count == 0) continue;
+        const char *m = s_uris[i].method == HTTP_GET ? "GET"
+                      : s_uris[i].method == HTTP_POST ? "POST" : "DELETE";
+        if (!perf_put(buf, size, &off, "%s{\"m\":\"%s\",\"u\":\"%s\",\"n\":%" PRIu32
+                      ",\"sum_ms\":%" PRIu64 ",\"max_ms\":%" PRIu32 "}",
+                      first ? "" : ",", m, s_uris[i].uri, a->count, a->sum_ms, a->max_ms))
+            return -1;
+        first = false;
+    }
+    perf_acc_t lock_wait, gate_wait;
+    radon_stats_lock_wait_get(&lock_wait);
+    http_io_gate_wait_get(&gate_wait);
+    if (!perf_put(buf, size, &off, "],\"root_304\":%" PRIu32 ",\"root_406\":%" PRIu32,
+                  s_root_304, s_root_406)) return -1;
+    if (!perf_put_acc(buf, size, &off, "lock_wait", &lock_wait)) return -1;
+    if (!perf_put_acc(buf, size, &off, "gate_wait", &gate_wait)) return -1;
+    if (!perf_put(buf, size, &off,
+                  ",\"stack_free\":{\"httpd\":%d,\"radex_reconnect\":%d,\"publish\":%d,\"main\":%d}"
+                  ",\"largest_free_8bit\":%u}",
+                  perf_stack_free("httpd"), perf_stack_free("radex_reconnect"),
+                  perf_stack_free("publish"), perf_stack_free("main"),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))) return -1;
+    return (int)off;
+}
+
 void web_server_init(void)
 {
     httpd_handle_t server = NULL;
@@ -1717,7 +1811,12 @@ void web_server_init(void)
         return;
     }
     for (size_t i = 0; i < URI_COUNT; i++) {
-        e = httpd_register_uri_handler(server, &s_uris[i]);
+        /* #RADEX-294: всё идёт через perf_wrap, индекс строки — в user_ctx
+           (свои user_ctx обработчики не используют; httpd копирует поля). */
+        httpd_uri_t u = s_uris[i];
+        u.handler  = perf_wrap;
+        u.user_ctx = (void *)(intptr_t)i;
+        e = httpd_register_uri_handler(server, &u);
         if (e != ESP_OK)
             ESP_LOGE(TAG, "URI %s не зарегистрирован: %s", s_uris[i].uri, esp_err_to_name(e));
     }

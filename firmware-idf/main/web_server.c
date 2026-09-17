@@ -2,7 +2,8 @@
 //  web_server.c — HTTP-морда шлюза: показания, статус, лог.
 //
 //  Взят каркас донора (atomspectra-waterfall/main/web_server.c): та же схема
-//  «httpd_start + статическая таблица uris[] + EMBED_HTML_HANDLER». Тело
+//  «httpd_start + статическая таблица uris[] + EMBED_HTML_HANDLER» (макрос
+//  заменён handle_root с gzip/ETag, #RADEX-294). Тело
 //  обработчиков своё — у донора 50 URI под спектры и водопад, здесь нужно 5.
 //
 //  max_uri_handlers считается от своей таблицы: превышение лимита НЕ даёт
@@ -64,17 +65,39 @@ static const char *TAG = "web";
    запрос — фрагментация ради проблемы, которой при однопоточном сервере нет.
    Это НЕ про гонку с задачей BLE — та отдельная, см. #RADEX-172. */
 
-#define EMBED_HTML_HANDLER(fn, sym)                                          \
-    static esp_err_t fn(httpd_req_t *req) {                                  \
-        extern const uint8_t sym##_start[] asm("_binary_" #sym "_start");    \
-        extern const uint8_t sym##_end[]   asm("_binary_" #sym "_end");      \
-        httpd_resp_set_type(req, "text/html");                               \
-        httpd_resp_send(req, (const char *)sym##_start,                      \
-                        sym##_end - sym##_start);                            \
-        return ESP_OK;                                                       \
-    }
+/* #RADEX-294: страница "/" — gzip уровня 9 и ETag из её содержимого (оба делает
+   web/build_page.py). Несжатые 458 КБ шли одним httpd_resp_send: 9 из 10
+   перезагрузок срывались, плата ~50 с не отвечала. Клиенту без gzip в
+   Accept-Encoding — 406: несжатая копия стоила бы +458 КБ флеша ради пути,
+   который и вешал плату, а все браузеры gzip шлют (curl — с --compressed). */
+#include "http_cache.h"
+#include "../web/index_etag.h"
 
-EMBED_HTML_HANDLER(handle_root, index_html)
+static esp_err_t handle_root(httpd_req_t *req)
+{
+    extern const uint8_t gz_start[] asm("_binary_index_html_gz_start");
+    extern const uint8_t gz_end[]   asm("_binary_index_html_gz_end");
+    static char hdr[256];   /* static — см. #RADEX-170 выше, стек httpd 6144 */
+    httpd_resp_set_hdr(req, "ETag", RADEX_PAGE_ETAG);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Vary", "Accept-Encoding");
+    /* TRUNC у If-None-Match — заголовок длиннее буфера: считаем «не совпал». */
+    if (httpd_req_get_hdr_value_str(req, "If-None-Match", hdr, sizeof(hdr)) == ESP_OK
+        && etag_match(hdr, RADEX_PAGE_ETAG)) {
+        httpd_resp_set_status(req, "304 Not Modified");
+        return httpd_resp_send(req, NULL, 0);
+    }
+    /* TRUNC у Accept-Encoding — разбираем уцелевшее начало. */
+    esp_err_t r = httpd_req_get_hdr_value_str(req, "Accept-Encoding", hdr, sizeof(hdr));
+    if ((r != ESP_OK && r != ESP_ERR_HTTPD_RESULT_TRUNC) || !accept_gzip(hdr)) {
+        httpd_resp_set_status(req, "406 Not Acceptable");
+        httpd_resp_set_type(req, "text/plain");
+        return httpd_resp_sendstr(req, "gzip required (curl --compressed)");
+    }
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)gz_start, gz_end - gz_start);
+}
 
 /* #RADEX-225: GET /api/method/tables — таблицы UV(t)/Kp(t) методики.
    Нужны странице, чтобы нарисовать сужающийся доверительный интервал: UV берётся

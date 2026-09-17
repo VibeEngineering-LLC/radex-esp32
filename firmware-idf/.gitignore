@@ -8,3 +8,6 @@ main/secrets_local.h
 # Реестр известных секретов для scripts/check_binary_secrets.py.
 # Составляется на машине сборщика и НЕ публикуется.
 scripts/secrets_known.txt
+# #RADEX-294: продукты web/build_page.py (сжатая страница и её ETag).
+web/index.html.gz
+web/index_etag.h

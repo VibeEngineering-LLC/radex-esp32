@@ -10,6 +10,7 @@ gcc $W -o /tmp/tm test/host/test_radon_method.c && /tmp/tm || f=$((f+1))
 gcc $W -o /tmp/tu test/host/test_label_utf8.c main/label_utf8.c && /tmp/tu || f=$((f+1))
 gcc $W -o /tmp/tg test/host/test_radon_test_guard.c && /tmp/tg || f=$((f+1))
 gcc $W -o /tmp/tjc test/host/test_journal_calib.c && /tmp/tjc || f=$((f+1))
+gcc $W -o /tmp/thc test/host/test_http_cache.c && /tmp/thc || f=$((f+1))
 exit $f
 '@
 exit $LASTEXITCODE

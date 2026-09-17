@@ -3,6 +3,8 @@
 import sys
 import os
 import argparse
+import gzip
+import hashlib
 import re
 
 
@@ -115,6 +117,14 @@ def main():
                 print("ОШИБКА: у вкладок %s есть блоки ВНЕ закрывающего </div> — они будут видны на каждой вкладке (W-067)" % ", ".join(broken))
                 sys.exit(1)
             write_file(output_path, result)
+            # #RADEX-294: "/" отдаётся сжатой копией (gzip 9, mtime=0 — байты
+            # воспроизводимы) с ETag = первые 16 hex sha256 страницы.
+            data = result.encode('utf-8')
+            with open('index.html.gz', 'wb') as f:
+                f.write(gzip.compress(data, compresslevel=9, mtime=0))
+            etag = hashlib.sha256(data).hexdigest()[:16]
+            with open('index_etag.h', 'w', encoding='utf-8', newline='\n') as f:
+                f.write('#pragma once\n#define RADEX_PAGE_ETAG "\\"%s\\""\n' % etag)
         except Exception as e:
             print(f"Ошибка записи index.html: {e}")
             sys.exit(1)

@@ -26,7 +26,7 @@ idf_component_register(
         # radon_test_guard.h — static inline, отдельного .c нет (#RADEX-291)
     INCLUDE_DIRS "."
     EMBED_FILES
-        "../web/index.html"
+        "../web/index.html.gz"    # #RADEX-294: сжатая страница + web/index_etag.h от build_page.py
         "../web/setup.html"
 )
 

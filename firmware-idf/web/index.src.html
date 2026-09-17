@@ -1570,7 +1570,7 @@ function resultsTableData() {
     ['Нижняя граница диапазона', rg ? `${r(rg.lower)} (не менее 0)` : '—'],
     ['Верхняя граница диапазона', rg ? r(rg.upper) : '—'],
     ['Нормативный уровень', r(a.c_rl)],
-    ['Продолжительность теста', span > 0 ? `${a.days > 0 ? a.days : Math.floor(span / 86400)} сут (${formatSpanMDH(span)})` : '—'],
+    ['Продолжительность теста', formatTestDuration(span)],   /* #RADEX-290 */
     ['Начало теста', st > 0 ? new Date(st * 1000).toLocaleString('ru-RU', {dateStyle: 'short', timeStyle: 'short'}) : '—'],
     ['Количество измерений', (history && history.total > 0) ? String(history.total) : String(historyMeasurements(pts))],
     ['Интервал измерений', step > 0 ? formatStepShort(step) : '—']];
@@ -1597,7 +1597,7 @@ function testSpanNote(pts) {
   if (!(st > 0) || !pts.length) return '';
   const last = pts[pts.length - 1].t;
   if (!(last > st)) return '';
-  return ' · Продолжительность теста: ' + formatSpanMDH(last - st);
+  return ' · Продолжительность теста: ' + formatTestDuration(last - st);   /* #RADEX-290 */
 }
 
 /* #RADEX-225: таблицы UV(t)/Kp(t) приходят С ПЛАТЫ (GET /api/method/tables) — те
@@ -1709,6 +1709,15 @@ function formatStepShort(sec) {
    Месяц = 30 суток: ровно то же соглашение, что в таблицах UV(t)/Kp(t) методики,
    где год записан как 360 суток (main/radon_stats.c). Календарные месяцы дали бы
    длительность, не совпадающую со строкой таблицы, по которой считается вердикт. */
+/* #RADEX-290: продолжительность теста — ОДНА функция для таблицы, карточки «Результат теста»,
+   подписи под графиком и заключения на «Графиках». Сутки — целые, округление вниз, из самой
+   длительности: плата отдаёт days с минимумом 1 (radon_stats.c:629), и 16 ч выводилось «1 сут».
+   Формат автора: «341 сут (11 мес 11 сут 16 ч)»; меньше суток — только «16 ч». */
+function formatTestDuration(sec) {
+  if (!isFinite(sec) || sec <= 0) return '—';
+  if (sec < 86400) return formatSpanMDH(sec);
+  return Math.floor(sec / 86400) + ' сут (' + formatSpanMDH(sec) + ')';
+}
 function formatSpanMDH(sec) {
   if (!isFinite(sec) || sec < 0) return '—';
   const mon = Math.floor(sec / (30 * 86400));
@@ -4402,8 +4411,7 @@ function verdictFacts(a) {
        рядом как привычная форма. */
     if (to > from) {
       rows.push('Последняя запись: ' + fmt(to));
-      const days = (isFinite(a.days) && a.days > 0) ? a.days : Math.floor((to - from) / 86400);
-      rows.push('Продолжительность теста: ' + days + ' сут (' + formatSpanMDH(to - from) + ')');
+      rows.push('Продолжительность теста: ' + formatTestDuration(to - from));   /* #RADEX-290 */
     }
   }
   if (a.c > 0) rows.push('Средняя ОА радона: ' + Math.round(a.c) + ' Бк/м³');
@@ -4745,9 +4753,11 @@ function renderArchAssess(a, sourceText) {
 
     const days = isFinite(a.days) && a.days > 0
       ? a.days : (toTs > a.from ? Math.floor((toTs - a.from) / 86400) : 0);
-    if (days > 0) {
-      const span = toTs > a.from ? formatSpanMDH(toTs - a.from) : '';
-      html += `<div>Продолжительность: ${days} сут${span ? ' (' + span + ')' : ''}</div>`;
+    /* #RADEX-290: при известном конце — та же formatTestDuration; без конца — только сутки платы */
+    if (toTs > a.from) {
+      html += `<div>Продолжительность: ${formatTestDuration(toTs - a.from)}</div>`;
+    } else if (days > 0) {
+      html += `<div>Продолжительность: ${days} сут</div>`;
     }
   }
 

@@ -49,6 +49,12 @@ for (let k = 12; k >= 0; k--) cycPts.push({t: cycStart - k * 3600, r: 100});
 for (let k = 1; k <= 5; k++) cycPts.push({t: cycStart + k * 600, r: 100 + k});
 const cyc = cycleFromPoints(cycPts, cycStart);
 t.push(['#287: цикл с start замера — 10 мин, а не 60 из прежних промежутков', cyc.minutes === 10 && cyc.samples === 5 && cyc.stable]);
+// #RADEX-290: продолжительность теста на границах суток
+const fmtDur = new Function(fn('formatSpanMDH').toString() + src.match(/function formatTestDuration\([\s\S]*?\n}/)[0] + '; return formatTestDuration;')();
+t.push(['#290: 16,5 ч → «16 ч»', fmtDur(16.5 * 3600) === '16 ч']);
+t.push(['#290: 23 ч 59 мин → «23 ч»', fmtDur(23 * 3600 + 59 * 60) === '23 ч']);
+t.push(['#290: ровно 24 ч → «1 сут (1 сут 0 ч)»', fmtDur(86400) === '1 сут (1 сут 0 ч)']);
+t.push(['#290: 341 сут 16 ч → «341 сут (11 мес 11 сут 16 ч)»', fmtDur(341 * 86400 + 16 * 3600) === '341 сут (11 мес 11 сут 16 ч)']);
 for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }
 console.log(`итого (js): красных ${fail} из ${cases.length + 1 + t.length}`);
 process.exit(fail);

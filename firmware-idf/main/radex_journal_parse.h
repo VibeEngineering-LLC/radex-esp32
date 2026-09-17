@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>   /* #RADEX-293: time_t для finished_unix */
 
 // GATT-карта NUS прибора (жёсткие handle, discovery не делаем — см. ble_radex.c).
 #define RADEX_NUS_H_RX    0x0010   // write: команды
@@ -103,6 +104,8 @@ typedef struct {
     bool     ok;                 // последний сеанс прошёл все шаги
     char     status[48];         // "ok" | "timeout: step N" | "disconnect" | ...
     uint32_t finished_s;         // аптайм завершения, с
+    time_t   finished_unix;      // #RADEX-293: часы шлюза (NTP) в момент завершения сеанса —
+                                 // точка отсчёта калибровки time_raw, не время клика по кнопке
     uint16_t mtu;                // ATT MTU соединения (23 = не согласован; записи нужен >= 27)
     bool     have_summary;
     radex_journal_summary_t summary;

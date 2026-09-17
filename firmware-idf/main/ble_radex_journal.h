@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <esp_gattc_api.h>
+#include "radex_journal_parse.h"   /* #RADEX-293: radex_journal_t для ble_radex_journal_get_result */
 
 void ble_radex_journal_init(void);
 void ble_radex_journal_request(void);          // из Web: поставить в очередь
@@ -17,3 +18,6 @@ void ble_radex_journal_on_gattc_event(esp_gattc_cb_event_t event, esp_ble_gattc_
 void ble_radex_journal_on_disconnect(void);
 void ble_radex_journal_set_mtu(uint16_t mtu);          // из GATTS_MTU_EVT ble_radex.c
 int  ble_radex_journal_json(char *buf, size_t len);   // JSON для GET /api/journal
+// #RADEX-293: копия последнего результата сеанса (под тем же мьютексом, что и
+// ble_radex_journal_json) — для radon_stats_journal_preview/save. false — out==NULL.
+bool ble_radex_journal_get_result(radex_journal_t *out);

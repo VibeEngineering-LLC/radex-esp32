@@ -703,6 +703,12 @@
             <tbody id="journal-table-body"></tbody>
           </table>
         </div>
+        <!-- #RADEX-293: (а) N считает GET /api/journal/preview — ничего не пишет;
+             (б) кнопка пишет НОВЫЕ точки в radon.csv только по явному нажатию. -->
+        <div class="form-group" style="margin-top:var(--sp-3);margin-bottom:0">
+          <button type="button" id="btn-journal-save" disabled>Сохранить 0 точек в историю</button>
+          <div class="sub" id="journal-save-note" style="font-size:var(--fs-xs);margin-top:6px"></div>
+        </div>
       </div>
 
       <h2 class="section-title">Экспорт и лог</h2>
@@ -1112,6 +1118,24 @@
       renderJournalTable(j);
       const btn = document.getElementById('btn-journal-refresh');
       if (btn) btn.disabled = !!(j && (j.busy || j.pending));
+      journalUpdateSaveButton(j);
+    }
+
+    /* #RADEX-293: N считается ОДИН РАЗ на завершённую сессию (finished_s меняется
+       раз в сеанс) — сканировать radon.csv на каждом тике 3 с не нужно и дорого. */
+    let journalLastFinishedS = null;
+    async function journalUpdateSaveButton(j) {
+      const btn = document.getElementById('btn-journal-save');
+      if (!btn) return;
+      const ready = !!(j && j.valid && j.ok && !j.busy && !j.pending);
+      if (!ready) { btn.textContent = journalSaveButtonText(0); btn.disabled = true; return; }
+      if (j.finished_s === journalLastFinishedS) return;   /* уже посчитано для этой сессии */
+      journalLastFinishedS = j.finished_s;
+      let p = null;
+      try { p = await (await fetch('/api/journal/preview', {cache: 'no-store'})).json(); } catch (e) { /* следующий тик */ }
+      const n = (p && p.ready) ? (p.new_points || 0) : 0;
+      btn.textContent = journalSaveButtonText(n);
+      btn.disabled = n === 0;
     }
     function diagStart() {
       if (diagTimer) return;
@@ -1518,6 +1542,23 @@
       journalTick();
     });
 
+    /* #RADEX-293: запись в radon.csv — только по явному нажатию, никогда
+       автоматически после чтения журнала (необратимая правка истории). */
+    const btnJournalSave = document.getElementById('btn-journal-save');
+    if (btnJournalSave) btnJournalSave.addEventListener('click', async () => {
+      if (!confirm(btnJournalSave.textContent + '? Действие необратимо: точки добавятся в историю платы.')) return;
+      const note = document.getElementById('journal-save-note');
+      try {
+        const r = await fetch('/api/journal/save', { method: 'POST' });
+        const j = await r.json();
+        if (note) note.textContent = (j && j.ok)
+          ? `добавлено ${j.new_points_added} ${ruCount(j.new_points_added, 'точка', 'точки', 'точек')}`
+          : 'не удалось сохранить';
+      } catch (e) { if (note) note.textContent = 'не удалось сохранить: ' + e.message; return; }
+      journalLastFinishedS = null;   /* пересчитать N: только что сохранённое больше не «новое» */
+      journalTick();
+    });
+
     function selectDevice(mac) {
       fetch('/api/target', {
         method: 'POST',
@@ -1801,6 +1842,19 @@ function journalStatusText(j) {
 
 /* Время записи — секунды с начала ПОКАЗАННОГО журнала (от самой ранней записи),
    не календарная дата (см. journalStatusText выше). */
+/* #RADEX-293: русское склонение числительного при N точек (1/2-4/5-20 и т.п.). */
+function ruCount(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
+}
+function journalSaveButtonText(n) {
+  n = Number(n) || 0;
+  return `Сохранить ${n} ${ruCount(n, 'точку', 'точки', 'точек')} в историю`;
+}
+
 function journalRecordRows(records) {
   records = Array.isArray(records) ? records : [];
   if (!records.length) return [];

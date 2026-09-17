@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
+#include "radex_journal_parse.h"   /* #RADEX-293: radex_journal_t для journal_preview/save */
 
 /**
  * Структура для хранения статистики за период.
@@ -128,6 +129,17 @@ uint32_t radon_stats_generation(void);
  * hum — относительная влажность, %.
  */
 void radon_stats_add(time_t ts, float radon, float radon_avg, float temp, float hum);
+
+/* #RADEX-293: журнал прибора → radon.csv. Калибровка НА ЛЕТУ (journal_calib.h):
+   offset = board_unix_now (часы шлюза, NTP) − summary.time_raw; дедуп ±180 с
+   с уже существующими точками (окно вокруг диапазона записей журнала, не весь
+   файл). preview — только считает НОВЫЕ точки; save — то же и дописывает их
+   через существующий защищённый путь (radon_stats_add_locked: общая история +
+   автодозапись в файл активного замера, если он идёт). Возврат: >=0 — число
+   новых точек; -1 — не готово (часы шлюза не синхронизированы, либо в журнале
+   нет сводки/записей). */
+int radon_stats_journal_preview(const radex_journal_t *j, time_t board_unix_now);
+int radon_stats_journal_save(const radex_journal_t *j, time_t board_unix_now);
 
 /* #RADEX-113: перевести записи с относительными метками (отрицательные секунды
    от включения) в реальное время. Вызывать, когда часы стали известны.

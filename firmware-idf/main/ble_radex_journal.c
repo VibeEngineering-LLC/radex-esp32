@@ -11,6 +11,7 @@
 #include <string.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <time.h>   /* #RADEX-293: time(NULL) — часы шлюза в момент завершения сеанса */
 #include <esp_gattc_api.h>
 #include <esp_gatt_defs.h>
 #include <freertos/FreeRTOS.h>
@@ -161,6 +162,10 @@ static void j_finish(bool ok, const char *status)
     }
     s_work.ok = ok;
     s_work.finished_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    /* #RADEX-293: захват ЗДЕСЬ, а не в момент клика "Сохранить" — иначе задержка
+       между чтением журнала и решением оператора сохранить сдвинула бы калибровку
+       на всю эту задержку, а не на длину сеанса (~1,5 мин, некритично). */
+    s_work.finished_unix = time(NULL);
     s_active = false;
     s_result = s_work;
     unsigned stale = s_trk.stale_acks, unexp = s_trk.unexpected, outst = s_trk.outstanding;
@@ -441,4 +446,13 @@ int ble_radex_journal_json(char *buf, size_t len)
         xSemaphoreGive(s_mtx);
     }
     return n;
+}
+
+bool ble_radex_journal_get_result(radex_journal_t *out)
+{
+    if (!out) return false;
+    if (s_mtx) xSemaphoreTake(s_mtx, portMAX_DELAY);
+    *out = s_result;
+    if (s_mtx) xSemaphoreGive(s_mtx);
+    return true;
 }

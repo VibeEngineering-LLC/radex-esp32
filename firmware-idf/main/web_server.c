@@ -551,6 +551,36 @@ static esp_err_t handle_journal_refresh(httpd_req_t *req) {
     return httpd_resp_send(req, buf, n);
 }
 
+/* #RADEX-293: (а) предпросмотр — считает НОВЫЕ точки, ничего не пишет. */
+static esp_err_t handle_journal_preview(httpd_req_t *req) {
+    radex_journal_t j;
+    if (!ble_radex_journal_get_result(&j)) return httpd_resp_send_500(req);
+    /* #RADEX-293: часы шлюза на момент ЗАВЕРШЕНИЯ сеанса (j.finished_unix),
+       не на момент этого запроса — иначе задержка до клика сдвинула бы калибровку. */
+    int n = radon_stats_journal_preview(&j, j.finished_unix);
+    char buf[80];
+    int len = snprintf(buf, sizeof(buf), "{\"ready\":%s,\"new_points\":%d}",
+                       n >= 0 ? "true" : "false", n >= 0 ? n : 0);
+    if (len < 0 || len >= (int)sizeof(buf)) return httpd_resp_send_500(req);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, len);
+}
+
+/* (б) сохранение — отдельная явная кнопка: запись в историю необратима,
+   автоматически после чтения журнала не делается (#RADEX-293). */
+static esp_err_t handle_journal_save(httpd_req_t *req) {
+    radex_journal_t j;
+    if (!ble_radex_journal_get_result(&j)) return httpd_resp_send_500(req);
+    int n = radon_stats_journal_save(&j, j.finished_unix);   /* #RADEX-293: см. handle_journal_preview */
+    char buf[96];
+    int len = snprintf(buf, sizeof(buf), "{\"ok\":%s,\"new_points_added\":%d}",
+                       n >= 0 ? "true" : "false", n >= 0 ? n : 0);
+    if (len < 0 || len >= (int)sizeof(buf)) return httpd_resp_send_500(req);
+    if (n < 0) httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, len);
+}
+
 static esp_err_t handle_cycle(httpd_req_t *req) {
     static char buf[192];   /* #RADEX-170: static безопасен только пока httpd однопоточный, см. шапку файла */
     int len = poll_cycle_json(buf, sizeof(buf));
@@ -1631,6 +1661,8 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/cycle", .method = HTTP_GET, .handler = handle_cycle },
     { .uri = "/api/journal", .method = HTTP_GET, .handler = handle_journal_get },            /* #RADEX-281 */
     { .uri = "/api/journal/refresh", .method = HTTP_POST, .handler = handle_journal_refresh }, /* #RADEX-281 */
+    { .uri = "/api/journal/preview", .method = HTTP_GET,  .handler = handle_journal_preview },  /* #RADEX-293 */
+    { .uri = "/api/journal/save",    .method = HTTP_POST, .handler = handle_journal_save },     /* #RADEX-293 */
     { .uri = "/api/compact", .method = HTTP_POST, .handler = handle_compact },
     { .uri = "/api/reboot",  .method = HTTP_POST, .handler = handle_reboot },   /* #RADEX-148 */
     { .uri = "/api/tests",  .method = HTTP_GET, .handler = handle_tests_list },

@@ -14,6 +14,7 @@
 #include "radon_method.h"   /* #RADEX-271: порог правила §7.1.2 — 10 месяцев */
 #include "label_utf8.h"     /* #RADEX-274: имя замера с кириллицей, JSON-экранирование */
 #include "radon_test_guard.h"   /* #RADEX-291: защита от молчаливого перезапуска идущего теста */
+#include "journal_calib.h"      /* #RADEX-293: калибровка времени журнала + дедуп */
 #include <sys/stat.h>
 #include <esp_spiffs.h>
 #include <esp_timer.h>   /* #RADEX-113: относительные метки до синхронизации */
@@ -1625,6 +1626,75 @@ void radon_stats_add(time_t ts, float radon, float radon_avg, float temp, float 
     }
     radon_stats_add_locked(ts, radon, radon_avg, temp, hum);
     radon_stats_unlock();
+}
+
+#define RADEX_JOURNAL_DEDUP_WINDOW_S 180
+#define RADEX_JOURNAL_EXISTING_MAX   128
+
+/* #RADEX-293: калибровка на лету (journal_calib.h) + дедуп с общей историей.
+   commit=false — только считает НОВЫЕ точки; commit=true — дописывает их
+   через radon_stats_add_locked(). Пустая история в окне → n_existing=0 →
+   ничего не "покрыто" — тот случай, где журнал ОБЯЗАН заполнить пробел. */
+static int radon_stats_journal_apply_locked(const radex_journal_t *j, time_t board_unix_now, bool commit)
+{
+    if (!mounted || !j || !j->have_summary || j->n_records == 0) return -1;
+    if (!is_valid_time(board_unix_now)) return -1;
+
+    int64_t offset = radex_journal_calib_offset(board_unix_now, j->summary.time_raw);
+    uint8_t n_rec = j->n_records > RADEX_J_MAX_REC ? RADEX_J_MAX_REC : j->n_records;
+    time_t cand[RADEX_J_MAX_REC], cand_min = 0, cand_max = 0;
+    for (uint8_t i = 0; i < n_rec; i++) {
+        cand[i] = radex_journal_calib_abs(j->records[i].time_raw, offset);
+        if (i == 0 || cand[i] < cand_min) cand_min = cand[i];
+        if (i == 0 || cand[i] > cand_max) cand_max = cand[i];
+    }
+
+    time_t existing[RADEX_JOURNAL_EXISTING_MAX];
+    size_t n_existing = 0;
+    FILE *f = fopen(filename, "r");
+    if (f) {
+        char line[128];
+        fgets(line, sizeof(line), f);   /* заголовок */
+        radon_row_t row;
+        while (fgets(line, sizeof(line), f)) {
+            if (!radon_csv_parse(line, &row) || !is_valid_time(row.ts)) continue;
+            if (row.ts < cand_min - RADEX_JOURNAL_DEDUP_WINDOW_S ||
+                row.ts > cand_max + RADEX_JOURNAL_DEDUP_WINDOW_S) continue;
+            if (n_existing < RADEX_JOURNAL_EXISTING_MAX) existing[n_existing++] = row.ts;
+        }
+        fclose(f);
+    }
+
+    int new_count = 0;
+    for (uint8_t i = 0; i < n_rec; i++) {
+        if (radex_journal_dedup_covered(existing, n_existing, cand[i], RADEX_JOURNAL_DEDUP_WINDOW_S)) continue;
+        new_count++;
+        if (!commit) continue;
+        const radex_journal_record_t *r = &j->records[i];
+        /* radon_avg: у исторической записи журнала нет своего "среднего
+           прибора" на тот момент — дублируем измеренную ОА, а не выдумываем
+           число (#AH-1); колонка не входит в расчёт заключения (тот берёт
+           radon, не radon_avg). */
+        radon_stats_add_locked(cand[i], r->oa, r->oa, (float)r->temp_x10 / 10.0f, (float)r->humidity);
+        if (n_existing < RADEX_JOURNAL_EXISTING_MAX) existing[n_existing++] = cand[i];   /* не задвоить внутри пачки */
+    }
+    return new_count;
+}
+
+int radon_stats_journal_preview(const radex_journal_t *j, time_t board_unix_now)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_READ)) return -1;
+    int result = radon_stats_journal_apply_locked(j, board_unix_now, false);
+    radon_stats_unlock();
+    return result;
+}
+
+int radon_stats_journal_save(const radex_journal_t *j, time_t board_unix_now)
+{
+    if (!radon_stats_lock(RS_LOCK_MS_WRITE)) return -1;
+    int result = radon_stats_journal_apply_locked(j, board_unix_now, true);
+    radon_stats_unlock();
+    return result;
 }
 
 int radon_stats_rebase(time_t now)

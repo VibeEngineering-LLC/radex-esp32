@@ -75,6 +75,15 @@ t.push(['#292: sequence mismatch — не выдумывает «ok»', journalF
 t.push(['#292: mtu N < 27 — «MTU слишком мал»', journalFns.journalStatusText({valid: true, ok: false, status: 'mtu 23 < 27'}).indexOf('MTU') >= 0]);
 t.push(['#292: busy — сеанс идёт, не путается со старым результатом', journalFns.journalStatusText({busy: true, valid: true, ok: true}) === 'сеанс идёт…']);
 t.push(['#292: нет записей — таблица не рисуется', journalFns.journalRecordRows([]).length === 0 && journalFns.journalRecordRows(null).length === 0]);
+// #RADEX-293: кнопка «Сохранить N точек» — русское склонение (1/2-4/5-20/21…)
+const jSave = new Function(fn('ruCount').toString() + fn('journalSaveButtonText').toString()
+  + '; return {ruCount, journalSaveButtonText};')();
+t.push(['#293: 0 точек', jSave.journalSaveButtonText(0) === 'Сохранить 0 точек в историю']);
+t.push(['#293: 1 точка → "точку"', jSave.journalSaveButtonText(1) === 'Сохранить 1 точку в историю']);
+t.push(['#293: 2 точки → "точки"', jSave.journalSaveButtonText(2) === 'Сохранить 2 точки в историю']);
+t.push(['#293: 5 точек → "точек"', jSave.journalSaveButtonText(5) === 'Сохранить 5 точек в историю']);
+t.push(['#293: 21 точка → "точку" (не "точек")', jSave.journalSaveButtonText(21) === 'Сохранить 21 точку в историю']);
+t.push(['#293: 11 точек → "точек" (искл. 11-14)', jSave.journalSaveButtonText(11) === 'Сохранить 11 точек в историю']);
 for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }
 console.log(`итого (js): красных ${fail} из ${cases.length + 1 + t.length}`);
 process.exit(fail);

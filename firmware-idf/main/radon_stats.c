@@ -13,6 +13,7 @@
 #include <math.h>   /* sqrt в критерии (1) методики */
 #include "radon_method.h"   /* #RADEX-271: порог правила §7.1.2 — 10 месяцев */
 #include "label_utf8.h"     /* #RADEX-274: имя замера с кириллицей, JSON-экранирование */
+#include "radon_test_guard.h"   /* #RADEX-291: защита от молчаливого перезапуска идущего теста */
 #include <sys/stat.h>
 #include <esp_spiffs.h>
 #include <esp_timer.h>   /* #RADEX-113: относительные метки до синхронизации */
@@ -843,6 +844,13 @@ static int radon_stats_json_locked(char *buf, size_t len, float c_rl, float u_d,
 const char *radon_stats_file(void) { return filename; }
 
 static bool radon_stats_start_test_locked(void) {
+    /* #RADEX-291: вторая линия защиты (первая — web_server.c, до вызова этой
+       функции). Явный тест уже идёт — tstart молча не перезаписываем. */
+    if (radon_test_start_blocked(radon_stats_test_start_locked(), radon_stats_test_end_locked())) {
+        ESP_LOGW(TAG, "старт отклонён: явный тест уже идёт");
+        return false;
+    }
+
     time_t now = time(NULL);
     if (!is_valid_time(now)) {
         ESP_LOGE(TAG, "Cannot start test: system time is not synchronized");

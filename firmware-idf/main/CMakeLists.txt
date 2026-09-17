@@ -23,6 +23,7 @@ idf_component_register(
         "target_label.c"          # #RADEX-283: имя замера и сравнение MAC, хост-тест
         "target_switch.c"         # #RADEX-283: смена прибора с сохранением замера
         "label_utf8.c"            # #RADEX-274: имя замера с кириллицей, хост-тест
+        # radon_test_guard.h — static inline, отдельного .c нет (#RADEX-291)
     INCLUDE_DIRS "."
     EMBED_FILES
         "../web/index.html"

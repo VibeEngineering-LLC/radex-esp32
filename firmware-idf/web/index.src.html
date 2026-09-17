@@ -5361,10 +5361,22 @@ async function methodTick() {
   }
 }
 
+/* #RADEX-291, оператор: «непонятно что тест уже идёт, а это начало нового».
+   Explicit-идущий тест кнопка уже не даёт нажать (disabled, #RADEX-104) —
+   здесь остаётся тест ПО УМОЛЧАНИЮ (started && !explicit): его никто не
+   начинал явно, но он идёт, и текст обязан сказать это прямо, а не только
+   предупредить о потере данных из оценки. Чистая функция (node-тест). */
+function startConfirmMessage(t) {
+  t = t || {};
+  const already = !!t.started && !t.finished;
+  const since = already && t.start ? new Date(t.start * 1000).toLocaleString('ru-RU') : '';
+  return already
+    ? `Тест уже идёт (по умолчанию, с ${since || 'первой записи'}). Начать новый тест с текущего момента? `
+      + 'Прежние данные останутся в файле истории, но в оценку больше не войдут.'
+    : 'Начать тест с текущего момента? Прежние данные останутся в файле истории, но в оценку больше не войдут.';
+}
 document.getElementById('btn_test_start').addEventListener('click', async () => {
-  /* #RADEX-150: замер идёт всегда, поэтому подтверждение спрашивается ВСЕГДА —
-     нажатие отсекает от оценки всё накопленное до этого момента. */
-  if (!confirm('Начать тест с текущего момента? Прежние данные останутся в файле истории, но в оценку больше не войдут.')) return;
+  if (!confirm(startConfirmMessage(statsData && statsData.test))) return;
 
   try {
     const btn = document.getElementById('btn_test_start');

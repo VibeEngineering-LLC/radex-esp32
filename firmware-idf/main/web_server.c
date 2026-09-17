@@ -15,6 +15,7 @@
 #include "ble_radex_journal.h"   /* #RADEX-281 */
 #include "target_switch.h"       /* #RADEX-283 */
 #include "label_utf8.h"          /* #RADEX-274 */
+#include "radon_test_guard.h"    /* #RADEX-291 */
 #include "radex_journal_parse.h" /* RADEX_J_JSON_MAX */
 #include "ha_mqtt.h"
 #include "log_ring.h"
@@ -937,10 +938,20 @@ static esp_err_t handle_test_ctl(httpd_req_t *req)
 
     bool ok = false;
     const char *err = "";
+    const char *status = "400 Bad Request";
     if (strcmp(body, "start") == 0) {
-        ok = radon_stats_start_test();
-        if (!ok) err = "часы платы ещё не синхронизированы";
-        ESP_LOGW(TAG, "замер по рациональному методу: старт %s", ok ? "принят" : "ОТКЛОНЁН");
+        /* #RADEX-291: явный тест уже идёт — 409, ничего не меняем. Раньше
+           radon_stats_start_test() молча перезаписывала tstart, осиротив файл
+           прежнего замера (класс #RADEX-283, но без действия «сменил прибор»). */
+        if (radon_test_start_blocked(radon_stats_test_start(), radon_stats_test_end())) {
+            err = "тест уже идёт";
+            status = "409 Conflict";
+            ESP_LOGW(TAG, "замер по рациональному методу: старт ОТКЛОНЁН — тест уже идёт");
+        } else {
+            ok = radon_stats_start_test();
+            if (!ok) err = "часы платы ещё не синхронизированы";
+            ESP_LOGW(TAG, "замер по рациональному методу: старт %s", ok ? "принят" : "ОТКЛОНЁН");
+        }
     } else if (strcmp(body, "finish") == 0) {
         /* #RADEX-200: завершение — не удаление. Ни история, ни файл замера не
            страдают: ставится отметка конца, после которой окно заключения
@@ -972,7 +983,7 @@ static esp_err_t handle_test_ctl(httpd_req_t *req)
                         уже в следующем её тике. */
                      ok ? "true" : "false", err, (long long) radon_stats_test_start_eff());
     if (n < 0 || n >= (int)sizeof(buf)) return httpd_resp_send_500(req);
-    if (!ok) httpd_resp_set_status(req, "400 Bad Request");
+    if (!ok) httpd_resp_set_status(req, status);   /* #RADEX-291: 409 для «тест уже идёт», иначе 400 */
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
 }

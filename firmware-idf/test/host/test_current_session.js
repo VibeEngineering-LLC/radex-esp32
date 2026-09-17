@@ -55,6 +55,11 @@ t.push(['#290: 16,5 ч → «16 ч»', fmtDur(16.5 * 3600) === '16 ч']);
 t.push(['#290: 23 ч 59 мин → «23 ч»', fmtDur(23 * 3600 + 59 * 60) === '23 ч']);
 t.push(['#290: ровно 24 ч → «1 сут (1 сут 0 ч)»', fmtDur(86400) === '1 сут (1 сут 0 ч)']);
 t.push(['#290: 341 сут 16 ч → «341 сут (11 мес 11 сут 16 ч)»', fmtDur(341 * 86400 + 16 * 3600) === '341 сут (11 мес 11 сут 16 ч)']);
+// #RADEX-291: текст подтверждения «Начало теста» называет, что тест уже идёт
+const startConfirmMessage = new Function(src.match(/function startConfirmMessage\([\s\S]*?\n}/)[0] + '; return startConfirmMessage;')();
+t.push(['#291: замер по умолчанию — сообщает, что уже идёт', startConfirmMessage({started: true, finished: false, explicit: false, start: 1789577734}).startsWith('Тест уже идёт')]);
+t.push(['#291: замер не начат — обычный текст без «уже идёт»', !startConfirmMessage({started: false}).includes('уже идёт')]);
+t.push(['#291: тест завершён — обычный текст (новый тест это не рестарт)', !startConfirmMessage({started: true, finished: true}).includes('уже идёт')]);
 for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }
 console.log(`итого (js): красных ${fail} из ${cases.length + 1 + t.length}`);
 process.exit(fail);

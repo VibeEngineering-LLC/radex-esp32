@@ -85,15 +85,6 @@
         </div>
       </div>
 
-      <!-- #RADEX-268, Цапалов п.2: количественные данные таблицей. Числа — с платы
-           (/api/stats assess) и из уже посчитанного на странице; новых формул нет. -->
-      <div class="card" style="overflow-x:auto">
-        <table id="results-table">
-          <thead><tr><th>Параметр</th><th>Объемная активность (ОА) радона, Бк/м³</th><th>Температура, °C</th><th>Влажность, %</th></tr></thead>
-          <tbody id="results-table-body"></tbody>
-        </table>
-      </div>
-
       <div class="chart-container">
         <!-- #RADEX-110, оператор: «убери кнопки радон/температура/влажность с
              показаний, перенеси на графики, разреши включать одновременно».
@@ -159,6 +150,16 @@
           <div class="text" id="assessment-text">Данных пока недостаточно для оценки</div>
           <div class="meta" id="assessment-hint" style="margin-top:6px">Закладка «Результат теста» содержит более подробную информацию</div>
         </div>
+      </div>
+
+      <!-- #RADEX-268, Цапалов п.2: количественные данные таблицей. Числа — с платы
+           (/api/stats assess) и из уже посчитанного на странице; новых формул нет.
+           #RADEX-289, оператор 17.09: «таблицу опусти ниже заключения». -->
+      <div class="card" style="overflow-x:auto;margin-top:var(--sp-4)">
+        <table id="results-table">
+          <thead><tr><th>Параметр</th><th>Объемная активность (ОА) радона, Бк/м³</th><th>Температура, °C</th><th>Влажность, %</th></tr></thead>
+          <tbody id="results-table-body"></tbody>
+        </table>
       </div>
 
 

@@ -42,6 +42,13 @@ const t = [
   ['D2: ограниченный режим — критерий (2) не определён', concl({verdict: 'uncertain', days: 20, kp: -1, crit2: 0, crit2_met: false, c_rl: 200, restricted: true}, 300).lines[1] === '2. Критерий (2) не определён,'],
   ['300 сут (10,0 мес) — со сноской', concl({verdict: 'exceeds', days: 300, kp: 1.09, crit2: 150, c_rl: 200}, 300).note.startsWith('*целесообразно')],
 ];
+// #RADEX-287: боевой образец — старый прибор/режим 12 промежутков по 3600 с, после start нового замера 5 по 600 с
+const cycleFromPoints = new Function(src.match(/function cycleFromPoints\([\s\S]*?\n    }/)[0] + '; return cycleFromPoints;')();
+const cycPts = [], cycStart = 1789600000;
+for (let k = 12; k >= 0; k--) cycPts.push({t: cycStart - k * 3600, r: 100});
+for (let k = 1; k <= 5; k++) cycPts.push({t: cycStart + k * 600, r: 100 + k});
+const cyc = cycleFromPoints(cycPts, cycStart);
+t.push(['#287: цикл с start замера — 10 мин, а не 60 из прежних промежутков', cyc.minutes === 10 && cyc.samples === 5 && cyc.stable]);
 for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }
 console.log(`итого (js): красных ${fail} из ${cases.length + 1 + t.length}`);
 process.exit(fail);

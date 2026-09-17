@@ -1221,6 +1221,27 @@
     }
 
 
+    /* #RADEX-287, «врёт о цикле измерений»: цикл — по промежуткам между записями ТЕКУЩЕГО
+       замера (с его start), медиана 12 последних. Чистая функция (node test/host/test_current_session.js). */
+    function cycleFromPoints(points, start) {
+      const ts = (Array.isArray(points) ? points : []).filter(p => p && p.t >= start).map(p => p.t).sort((a, b) => a - b);
+      const d = [];
+      for (let i = 1; i < ts.length; i++) if (ts[i] > ts[i - 1]) d.push(ts[i] - ts[i - 1]);
+      const last = d.slice(-12), near = s => [10, 20, 30, 60].reduce((b, v) => Math.abs(v * 60 - s) < Math.abs(b * 60 - s) ? v : b, 10);
+      if (last.length < 3) return { minutes: 0, samples: last.length, stable: false };
+      const med = [...last].sort((a, b) => a - b)[Math.floor(last.length / 2)];
+      const tail = last.slice(-3).map(near);
+      return { minutes: near(med), samples: last.length, stable: tail[0] === tail[1] && tail[1] === tail[2] };
+    }
+    /* Точки текущего замера за последние 6 ч: строк немного, прореживания (step) нет. */
+    async function cycleFromCurrentTest() {
+      if (!testsCacheLoaded && typeof multiLoadTestsList === 'function') await multiLoadTestsList();
+      const now = Math.floor(Date.now() / 1000), cs = currentSessionFrom(testsCache, now);
+      const r = await fetch('/api/history/range?max=1000&from=' + Math.max(cs.from, now - 6 * 3600), {cache: 'no-store'});
+      const j = await r.json();
+      return Object.assign(cycleFromPoints(j.points, cs.from), { current: cs.from > 0, step: j.step || 1 });
+    }
+
     /* #RADEX-67: расчётный интервал замера прибора. Прибор не сообщает свой цикл,
        он определяется по промежуткам между СМЕНАМИ значения (повторы в историю
        не пишутся). Пока промежутков мало, значение не устойчиво — и об этом надо
@@ -1231,14 +1252,18 @@
       if (!valueEl) return;
       try {
         const r = await fetch('/api/cycle', {cache: 'no-store'});
-        const c = await r.json();
+        const mc = await r.json();
+        /* #RADEX-287: /api/cycle — только ручная уставка; автоматический цикл платы копил
+           кольцо промежутков без отсечки по замеру/прибору (poll_cycle.c:216-224) и NVS cyauto. */
+        const c = mc.manual ? mc : await cycleFromCurrentTest();
         const m = Number(c.minutes) || 0;
+        const scope = c.current ? ' текущего замера' : ' (замер не идёт — по последним 6 ч)';
         if (c.manual) {
           valueEl.textContent = m + ' мин';
           noteEl.textContent = 'задано вручную';
-        } else if (m > 0 && c.stable) {
+        } else if (m > 0 && c.stable && c.step === 1) {
           valueEl.textContent = m + ' мин';
-          noteEl.textContent = 'определено по ' + (c.samples || 0) + ' промежуткам, значение устойчиво';
+          noteEl.textContent = 'определено по ' + (c.samples || 0) + ' промежуткам' + scope + ', значение устойчиво';
         } else if (m > 0) {
           valueEl.textContent = '≈ ' + m + ' мин';
           noteEl.textContent = 'предварительно: промежутков ' + (c.samples || 0) + ', нужно три совпадающих подряд';

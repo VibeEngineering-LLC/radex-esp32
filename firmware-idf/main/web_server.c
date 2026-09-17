@@ -77,6 +77,7 @@ static const char *TAG = "web";
 #include "http_cache.h"
 #include "../web/index_etag.h"
 #include "perf_stats.h"
+#include "boot_info.h"
 
 static uint32_t s_root_304, s_root_406;   /* #RADEX-294: только задача httpd */
 
@@ -1574,7 +1575,10 @@ static esp_err_t handle_system(httpd_req_t *req)
     int pn = perf_json(perf, sizeof(perf));
     httpd_resp_set_type(req, "application/json");
     if (httpd_resp_send_chunk(req, buf, n - 1) != ESP_OK) return ESP_FAIL;   /* без '}' */
-    httpd_resp_sendstr_chunk(req, ",\"perf\":");
+    char boot[96];   /* #RADEX-294: причина этого старта и uptime прошлого (boot_info.c) */
+    snprintf(boot, sizeof(boot), ",\"last_reset_reason\":%d,\"prev_uptime_s\":%u,\"perf\":",
+             boot_info_last_reset_reason(), (unsigned)boot_info_prev_uptime_s());
+    httpd_resp_sendstr_chunk(req, boot);
     httpd_resp_send_chunk(req, pn > 0 ? perf : "null", pn > 0 ? pn : 4);
     httpd_resp_sendstr_chunk(req, "}");
     return httpd_resp_send_chunk(req, NULL, 0);

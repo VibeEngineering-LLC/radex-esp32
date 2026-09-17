@@ -60,6 +60,21 @@ const startConfirmMessage = new Function(src.match(/function startConfirmMessage
 t.push(['#291: замер по умолчанию — сообщает, что уже идёт', startConfirmMessage({started: true, finished: false, explicit: false, start: 1789577734}).startsWith('Тест уже идёт')]);
 t.push(['#291: замер не начат — обычный текст без «уже идёт»', !startConfirmMessage({started: false}).includes('уже идёт')]);
 t.push(['#291: тест завершён — обычный текст (новый тест это не рестарт)', !startConfirmMessage({started: true, finished: true}).includes('уже идёт')]);
+// #RADEX-292: журнал прибора — реальные записи из Захвата 3 (reports/radex-ble-sniff-app-2026-09-16.md):
+// №3 time_raw=0x323da9a9, ОА=125.21, T×10=263; №2 time_raw=0x323da751, ОА=148.49, T×10=264; RH обеих 42.
+const journalFns = new Function(fn('journalStatusText').toString() + fn('journalRecordRows').toString()
+  + '; return {journalStatusText, journalRecordRows};')();
+const jRecs = [{number: 3, time_raw: 0x323da9a9, oa: 125.21, t_x10: 263, humidity: 42},
+               {number: 2, time_raw: 0x323da751, oa: 148.49, t_x10: 264, humidity: 42}];
+const jRows = journalFns.journalRecordRows(jRecs);
+t.push(['#292: время — секунды от самой ранней записи (не дата)', jRows[0].t === 600 && jRows[1].t === 0]);
+t.push(['#292: ОА округлена, T с одним знаком, RH как есть', jRows[0].oa === 125 && jRows[0].temp === '26.3' && jRows[0].rh === 42]);
+t.push(['#292: ok без truncated — «прочитан полностью»', journalFns.journalStatusText({valid: true, ok: true}) === 'прочитан полностью']);
+t.push(['#292: ok truncated — упоминает 64 записи', journalFns.journalStatusText({valid: true, ok: true, truncated: true}).indexOf('64') >= 0]);
+t.push(['#292: sequence mismatch — не выдумывает «ok»', journalFns.journalStatusText({valid: true, ok: false, seq_mismatch: true, status: 'sequence mismatch'}).indexOf('последовательности') >= 0]);
+t.push(['#292: mtu N < 27 — «MTU слишком мал»', journalFns.journalStatusText({valid: true, ok: false, status: 'mtu 23 < 27'}).indexOf('MTU') >= 0]);
+t.push(['#292: busy — сеанс идёт, не путается со старым результатом', journalFns.journalStatusText({busy: true, valid: true, ok: true}) === 'сеанс идёт…']);
+t.push(['#292: нет записей — таблица не рисуется', journalFns.journalRecordRows([]).length === 0 && journalFns.journalRecordRows(null).length === 0]);
 for (const [name, ok] of t) { if (!ok) fail++; console.log(`${ok ? 'GREEN' : 'RED  '} ${name}`); }
 console.log(`итого (js): красных ${fail} из ${cases.length + 1 + t.length}`);
 process.exit(fail);

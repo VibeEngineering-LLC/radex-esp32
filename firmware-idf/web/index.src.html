@@ -684,6 +684,27 @@
            набором строчных элементов с инлайн-стилями вне карточек — единственное
            место на вкладке не в общей сетке. Классы `.card`/`.form-group`/`.btn-row`
            уже были в архиве, просто не применены здесь; выдумывать нечего. -->
+      <!-- #RADEX-292, оператор: «а где кнопка импорта истории с прибора?» — #RADEX-281 сделан
+           только на backend (GET /api/journal, POST /api/journal/refresh). Не путать с
+           «Импортировать» на «Графиках» (btn-import-test) — тот грузит CSV-файл с диска.
+           Вкладка «Системные»: чтение журнала — диагностика самого прибора по BLE, та же
+           зона, что MAC/цикл/счётчики связи выше, а не настройка интеграции. -->
+      <h2 class="section-title">Журнал прибора (BLE)</h2>
+      <div class="card">
+        <div class="form-group" style="margin-bottom:0">
+          <button type="button" id="btn-journal-refresh">Прочитать журнал с прибора</button>
+          <div class="sub" id="journal-note" style="font-size:var(--fs-xs);margin-top:6px">
+            сеанс занимает ~1,5 мин на 14 записей; во время сеанса кнопка недоступна</div>
+        </div>
+        <div id="journal-summary" class="sub" style="margin-top:var(--sp-3)"></div>
+        <div style="overflow-x:auto">
+          <table id="journal-table" hidden>
+            <thead><tr><th>№</th><th>время, с от начала журнала</th><th>ОА, Бк/м³</th><th>T, °C</th><th>RH, %</th></tr></thead>
+            <tbody id="journal-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+
       <h2 class="section-title">Экспорт и лог</h2>
       <div class="card">
         <div class="form-group">
@@ -1053,6 +1074,22 @@
        карточки на полминуты и читается как «счётчики не считают».
        Запрашиваем ТОЛЬКО /api/data: остальное на этой вкладке не меняется
        так быстро, а лишние шесть запросов в минуту плата отдаёт зря. */
+    /* #RADEX-292: отрисовка сводки и таблицы журнала из ответа /api/journal. */
+    function renderJournalTable(j) {
+      const sumEl = document.getElementById('journal-summary');
+      const tbl = document.getElementById('journal-table');
+      const body = document.getElementById('journal-table-body');
+      if (!sumEl || !tbl || !body) return;
+      const s = j && j.summary;
+      sumEl.textContent = (s ? `Последняя запись в приборе: №${s.last_record}. ` : '') + journalStatusText(j);
+      const rows = journalRecordRows(j && j.records);
+      if (!rows.length) { tbl.hidden = true; body.innerHTML = ''; return; }
+      tbl.hidden = false;
+      body.innerHTML = rows.map(r =>
+        `<tr><td>${r.number}</td><td>${r.t}</td><td>${r.oa}</td><td>${r.temp}</td><td>${r.rh}</td></tr>`
+      ).join('');
+    }
+
     let diagTimer = null;
     async function diagTick() {
       try {
@@ -1062,6 +1099,19 @@
         window.__dataFetchedAt = Date.now();
         updateSystemDisplay();
       } catch (e) { /* следующий тик через 3 с; общий круг тоже продолжает идти */ }
+      journalTick();   /* #RADEX-292: опрос сеанса журнала тем же интервалом, вкладка не блокируется */
+    }
+
+    /* #RADEX-292: /api/journal — только чтение (не блокирует интерфейс); busy/pending
+       гасят кнопку, чтобы повторный клик не ловил 429 молча (429 — уже готовое поведение
+       backend, #RADEX-291-класс, 3df2c6f). Сохранение записей в замер — НЕ делается,
+       отдельная задача (#RADEX-281 «журнал → флеш/графики»). */
+    async function journalTick() {
+      let j = null;
+      try { j = await (await fetch('/api/journal', {cache: 'no-store'})).json(); } catch (e) { /* пропускаем тик */ }
+      renderJournalTable(j);
+      const btn = document.getElementById('btn-journal-refresh');
+      if (btn) btn.disabled = !!(j && (j.busy || j.pending));
     }
     function diagStart() {
       if (diagTimer) return;
@@ -1452,6 +1502,22 @@
         .catch(() => alert('Не удалось сбросить привязку'));
     }
 
+    /* #RADEX-292: POST /api/journal/refresh — только ставит сеанс в очередь; результат
+       забирает опрос journalTick() (диагностика открыта → раз в 3 с, диагностика закрыта —
+       следующий заход на вкладку). 429 backend (3df2c6f) — читаемым текстом, не молчаливо. */
+    const btnJournal = document.getElementById('btn-journal-refresh');
+    if (btnJournal) btnJournal.addEventListener('click', async () => {
+      try {
+        const r = await fetch('/api/journal/refresh', { method: 'POST' });
+        const j = await r.json();
+        if (j && j.accepted === false) {
+          alert(j.reason === 'busy' ? 'Сеанс чтения журнала уже идёт' : 'Слишком частый запрос — повторите не раньше чем через минуту');
+          return;
+        }
+      } catch (e) { alert('не удалось запросить журнал: ' + e.message); return; }
+      journalTick();
+    });
+
     function selectDevice(mac) {
       fetch('/api/target', {
         method: 'POST',
@@ -1718,6 +1784,33 @@ function formatTestDuration(sec) {
   if (sec < 86400) return formatSpanMDH(sec);
   return Math.floor(sec / 86400) + ' сут (' + formatSpanMDH(sec) + ')';
 }
+/* #RADEX-292: журнал прибора (GET /api/journal). Чистые функции — node-тест
+   test/host/test_current_session.js на реальном JSON с живой платы (14 записей). */
+function journalStatusText(j) {
+  j = j || {};
+  if (j.busy) return 'сеанс идёт…';
+  if (j.pending) return 'запрошено — начнётся в паузе между кругами опроса';
+  if (!j.valid) return 'журнал ещё не читали';
+  if (j.ok) return j.truncated ? 'прочитан: журнал длиннее 64 записей, показаны последние 64' : 'прочитан полностью';
+  if (j.seq_mismatch) return 'не прочитан: сбой последовательности записей (' + (j.status || '') + ')';
+  /* #RADEX-292 п.4: время записи (time_raw) — сырое, эпоха не установлена
+     (reports/radex-ble-sniff-app-2026-09-16.md) — календарную дату не выдумываем. */
+  if (typeof j.status === 'string' && j.status.indexOf('mtu') === 0) return 'не прочитан: MTU слишком мал для записи журнала (' + j.status + ')';
+  return 'не прочитан: ' + (j.status || 'ошибка');
+}
+
+/* Время записи — секунды с начала ПОКАЗАННОГО журнала (от самой ранней записи),
+   не календарная дата (см. journalStatusText выше). */
+function journalRecordRows(records) {
+  records = Array.isArray(records) ? records : [];
+  if (!records.length) return [];
+  const t0 = Math.min.apply(null, records.map(r => r.time_raw));
+  return records.map(r => ({
+    number: r.number, t: r.time_raw - t0,
+    oa: Math.round(r.oa), temp: (r.t_x10 / 10).toFixed(1), rh: r.humidity
+  }));
+}
+
 function formatSpanMDH(sec) {
   if (!isFinite(sec) || sec < 0) return '—';
   const mon = Math.floor(sec / (30 * 86400));

@@ -9,6 +9,20 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 
+# #USB-1: буферы Wi-Fi и lwIP — в PSRAM. Причина (бисекция на плате 18.09, прибор по BLE,
+# 5× GET / 131 КБ): универсальный образ (USB+BLE) оставлял внутренней памяти int_min 900 Б,
+# largest 1536 Б — отправка страницы вставала (19,5 с / таймаут 60 с, httpd send EAGAIN).
+# С этим профилем 0,21–0,40 с, int_min 21336, largest 15360 (v1.12.0: 0,32–1,04 с).
+# Профиль, который конфигуратор выставляет вместе с опцией, записан явно — чтобы сборка не
+# зависела от умолчаний и от локального sdkconfig.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=0
+
 # ── Канал связи с прибором (#USB-1) ─────────────────────────────────────────
 # Сборка универсальная: USB (плата — USB-host в OTG-разъёме, прибор — CDC-ACM) и
 # BLE в одном образе, выбор при работе (main/radex_link.c). Опций выбора нет.

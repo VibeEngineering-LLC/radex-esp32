@@ -11,8 +11,8 @@
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s (line %d)\n", msg, __LINE__); fails++; } else { printf("ok: %s\n", msg); } } while (0)
 
-typedef struct { char name[32]; uint8_t b[1024]; size_t n; } vec_t;
-static vec_t V[16];
+typedef struct { char name[48]; uint8_t b[1024]; size_t n; } vec_t;
+static vec_t V[64];
 static int nv = 0;
 
 static int hexval(int c) { if (c >= '0' && c <= '9') return c - '0'; if (c >= 'a' && c <= 'f') return c - 'a' + 10; if (c >= 'A' && c <= 'F') return c - 'A' + 10; return -1; }
@@ -22,10 +22,10 @@ static int load(const char *path)
 {
     FILE *f = fopen(path, "r"); if (!f) return -1;
     static char line[4096];
-    while (nv < 16 && fgets(line, sizeof line, f)) {
+    while (nv < 64 && fgets(line, sizeof line, f)) {
         char *sp = strchr(line, ' '); if (!sp) continue;
         *sp = 0; vec_t *v = &V[nv];
-        snprintf(v->name, sizeof v->name, "%.31s", line);
+        snprintf(v->name, sizeof v->name, "%.47s", line);
         const char *h = sp + 1; v->n = 0;
         while (hexval(h[0]) >= 0 && hexval(h[1]) >= 0 && v->n < sizeof v->b) { v->b[v->n++] = (uint8_t)(hexval(h[0]) * 16 + hexval(h[1])); h += 2; }
         nv++;
@@ -35,7 +35,7 @@ static int load(const char *path)
 
 static const vec_t *get(const char *name)
 {
-    for (int i = 0; i < nv; i++) if (strcmp(V[i].name, name) == 0) return &V[i];
+    for (int t = 2; t <= 3; t++) { char k[48]; snprintf(k, sizeof k, "t%02d_%s", t, name); for (int i = 0; i < nv; i++) if (strcmp(V[i].name, k) == 0) return &V[i]; }   /* векторы трасс 02 и 03 */
     printf("FAIL: нет вектора %s\n", name); fails++; exit(fails);
 }
 
@@ -68,7 +68,7 @@ int main(int argc, char **argv)
 
     // 1. Запросы — байт-в-байт как у RadexDC
     v = get("req_current");    n = radex_req_current(f, sizeof f, pnum_of(v));        check_same("0x0BC2 как в трассе", f, n, v);
-    v = get("req_arch_begin"); n = radex_req_arch_begin(f, sizeof f, pnum_of(v));     check_same("0x0C04 как в трассе", f, n, v);
+    v = get("req_arch_begin"); n = radex_req_arch_begin(f, sizeof f, pnum_of(v), 0); check_same("0x0C04 как в трассе", f, n, v);
     v = get("req_arch_hdr");   n = radex_req_arch_hdr(f, sizeof f, pnum_of(v));       check_same("0x0C0D как в трассе", f, n, v);
     v = get("req_arch_seek");  n = radex_req_arch_seek(f, sizeof f, pnum_of(v), 0x0107); check_same("0x0C05 (last_idx=0x0107) как в трассе", f, n, v);
     v = get("req_arch_page");  n = radex_req_arch_page(f, sizeof f, pnum_of(v));      check_same("0x0C0E как в трассе", f, n, v);
@@ -119,7 +119,7 @@ int main(int argc, char **argv)
     v = get("rsp_arch_hdr");
     radex_arch_hdr_t h;
     CHECK(ekosf_parse_rsp(v->b, v->n, pnum_of(v), RADEX_RPC_ARCH_HDR, &res, &rl, &fl) == EKOSF_RSP_OK && radex_parse_arch_hdr(res, rl, &h), "заголовок архива разобран");
-    CHECK(h.last_idx == 0x0107 && h.last_record == 264 && h.time_s2000 == 843058513UL, "заголовок: last_idx 263, запись №264, 14:55:13");
+    CHECK(h.last_gidx == 0x0107 && h.cur_session == 0 && h.n_sess == 1 && h.sess[0].count == 264 && h.sess[0].end_s2000 == 843058513UL, "заголовок: сквозной 263, сессия 0, запись №264, 14:55:13");
 
     v = get("rsp_arch_page");
     radex_arch_rec_t r[RADEX_ARCH_PAGE_RECS];

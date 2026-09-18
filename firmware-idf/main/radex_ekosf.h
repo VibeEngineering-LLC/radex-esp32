@@ -40,7 +40,7 @@ uint16_t ekosf_checksum16(const uint8_t *p, size_t n);
 
 // Построители запросов. Возврат — длина кадра, 0 если cap мал.
 size_t radex_req_current(uint8_t *out, size_t cap, uint16_t pnum);
-size_t radex_req_arch_begin(uint8_t *out, size_t cap, uint16_t pnum);
+size_t radex_req_arch_begin(uint8_t *out, size_t cap, uint16_t pnum, uint8_t session);
 size_t radex_req_arch_hdr(uint8_t *out, size_t cap, uint16_t pnum);
 size_t radex_req_arch_seek(uint8_t *out, size_t cap, uint16_t pnum, uint16_t last_idx);
 size_t radex_req_arch_page(uint8_t *out, size_t cap, uint16_t pnum);
@@ -63,25 +63,41 @@ int ekosf_parse_rsp(const uint8_t *buf, size_t len, uint16_t pnum, uint16_t rpc_
 // Текущие показания (0x0BC2). Результат: u32 длина блока (0x58), затем 88 байт.
 #define RADEX_CUR_BLOCK_LEN 88
 typedef struct {
-    float    avg;        // @0  средняя ОА, Бк/м3
+    // Сверено с трассами 02 и 04 (две точки) и архивом: @12 = ОА последней записи, @20 = её скользящее среднее.
+    float    avg;        // @0  средняя ОА текущей сессии прибора, Бк/м3 (= avg сессии в 0x0C0D)
+    float    sko;        // @4  СКО средней (= sko сессии в 0x0C0D)
     uint32_t counter;    // @8  счётчик опросов
-    float    cur;        // @20 текущая ОА, Бк/м3
+    float    last_oa;    // @12 ОА последнего цикла (сырая), Бк/м3
+    float    cur;        // @20 скользящее среднее (его показывает экран прибора и RadexDC), Бк/м3
     float    temp_c;     // @64 int16 /10, °C
     float    rh;         // @68 u16, %
+    uint16_t sessions;   // @74 число сессий в архиве — гипотеза (трассы 02/04: 1 и 2)
+    uint16_t session;    // @76 индекс текущей сессии — гипотеза (0 и 1 = параметр 0x0C04 у RadexDC)
     uint8_t  ss, mm, hh, dd, mo, yy;   // @80..85 часы прибора (местное), год = 2000 + yy
     bool     clock_ok;   // поля часов в допустимых пределах; иначе часы прибора не используются,
                          // но показания принимаются (не выставленные часы не должны глушить опрос)
 } radex_current_t;
 bool radex_parse_current(const uint8_t *res, size_t n, radex_current_t *out);
 
-// Заголовок архива (0x0C0D). Результат: u32 длина, затем поля.
+// Заголовок архива (0x0C0D), трассы 02 (1 сессия) и 04 (2 сессии): u32 длина, u16 сквозной индекс
+// последней записи (от 0, параметр 0x0C05), u16 индекс текущей сессии, затем сессии от новой к старой
+// по 18 байт; у самой старой prev_gidx = 0xFFFF.
+#define RADEX_ARCH_SESS_LEN  18
+#define RADEX_ARCH_MAX_SESS  16
 typedef struct {
-    uint16_t last_idx;     // @0  индекс последней записи от 0 (идёт в параметры 0x0C05)
-    uint16_t raw2;         // @2  ? (в трассе 0)
-    uint16_t last_record;  // @4  номер последней записи
-    uint32_t time_s2000;   // @6  время последней записи, с от 2000-01-01 (местное)
-    float    avg;          // @10 среднее ОА
-    float    sko;          // @14 СКО? — гипотеза
+    uint16_t count;         // +0  записей в сессии (номера 1..count)
+    uint32_t end_s2000;     // +2  время последней записи сессии, с от 2000-01-01 (местное)
+    float    avg;           // +6  средняя ОА сессии
+    float    sko;           // +10 СКО средней
+    uint16_t prev_gidx;     // +14 сквозной индекс последней записи предыдущей сессии (0xFFFF — нет)
+    uint16_t prev_session;  // +16 индекс предыдущей сессии
+} radex_arch_sess_t;
+typedef struct {
+    uint16_t last_gidx;
+    uint16_t cur_session;
+    uint8_t  n_sess;        // разобрано сессий
+    bool     chain_ok;      // дошли до самой старой (prev_gidx == 0xFFFF)
+    radex_arch_sess_t sess[RADEX_ARCH_MAX_SESS];
 } radex_arch_hdr_t;
 bool radex_parse_arch_hdr(const uint8_t *res, size_t n, radex_arch_hdr_t *out);
 
@@ -89,7 +105,7 @@ bool radex_parse_arch_hdr(const uint8_t *res, size_t n, radex_arch_hdr_t *out);
 #define RADEX_ARCH_REC_LEN   22
 #define RADEX_ARCH_PAGE_RECS 22
 typedef struct {
-    uint16_t raw0;        // @0  (в трассе 0)
+    uint16_t raw0;        // @0  индекс сессии (трасса 04: 1 у новых, 0 у старых); страницы идут сквозь сессии
     uint16_t idx;         // @2  номер записи
     uint32_t time_s2000;  // @4  с от 2000-01-01 (местное)
     float    oa;          // @8  ОА, Бк/м3

@@ -201,17 +201,20 @@ static bool poll_current(radex_current_t *c)
 }
 
 // Точку в историю ставит main.c по RADEX_H_RADON_AVG, беря последние температуру и влажность, —
-// поэтому среднее отдаётся ПОСЛЕДНИМ, после свежих T и RH. СКО и время измерения (BLE 0x0043/0x0046)
-// в 0x0BC2 не опознаны — не выдумываем, в /api/data они остаются null/0.
+// поэтому среднее отдаётся ПОСЛЕДНИМ. Семантика 1:1 с BLE: radon_last (0x0049) — ОА последнего цикла
+// (@12, сырая), radon_avg (0x0040) — средняя сессии прибора (@0), sko_avg (0x0043) — её СКО (@4).
+// Скользящее среднее (@20, его показывает экран прибора) только в лог. Время измерения (0x0046) не опознано.
 static void publish_current(const radex_current_t *c)
 {
-    ESP_LOGI(TAG, "ОА=%.2f средн.=%.2f Бк/м3 T=%.1f C RH=%.0f%% (часы прибора %02u:%02u:%02u %02u.%02u.%02u)",
-             (double)c->cur, (double)c->avg, (double)c->temp_c, (double)c->rh,
+    ESP_LOGI(TAG, "ОА=%.2f скольз.=%.2f средн.=%.2f±%.2f Бк/м3 T=%.1f C RH=%.0f%% сессия %u/%u (часы прибора %02u:%02u:%02u %02u.%02u.%02u)",
+             (double)c->last_oa, (double)c->cur, (double)c->avg, (double)c->sko, (double)c->temp_c, (double)c->rh,
+             (unsigned)c->session, (unsigned)c->sessions,
              (unsigned)c->hh, (unsigned)c->mm, (unsigned)c->ss, (unsigned)c->dd, (unsigned)c->mo, (unsigned)c->yy);
     if (!s_cb) return;
-    s_cb(RADEX_H_RADON_LAST, c->cur);
+    s_cb(RADEX_H_RADON_LAST, c->last_oa);
     s_cb(RADEX_H_TEMP, c->temp_c);
     s_cb(RADEX_H_HUMIDITY, c->rh);
+    s_cb(RADEX_H_SKO_AVG, c->sko);
     s_cb(RADEX_H_RADON_AVG, c->avg);
 }
 
@@ -271,8 +274,22 @@ static void j_finish(bool ok, const char *status)
     else    ESP_LOGE(TAG, "журнал НЕ прочитан: %s", status);
 }
 
-// Последовательность RadexDC «Загрузить данные» (трасса captures/radex_usb_02_archive.pcap):
-// 0x0C04 -> 0x0C0D (заголовок) -> 0x0C05 -> 0x0C0E страницами по 22 записи, номера по убыванию.
+// Последовательность RadexDC «Загрузить данные» (трассы captures/radex_usb_02_archive.pcap, _04_archive2.pcap):
+// 0x0C04(текущая сессия) -> 0x0C0D (заголовок: сессии от новой к старой) -> 0x0C05(сквозной индекс) ->
+// 0x0C0E страницами по 22 записи. Страницы идут СКВОЗЬ сессии по убыванию (трасса 04: после №1 сессии 1
+// сразу №264 сессии 0), поэтому хватает одного 0x0C05 на последнюю запись: берём последние 64 записи
+// архива, из скольких бы сессий они ни были. Каждая запись сверяется с ожидаемой парой (сессия, номер).
+static bool j_begin(uint8_t session, radex_arch_hdr_t *h, const uint8_t **res, size_t *rl)
+{
+    uint8_t f[EKOSF_TX_MAX];
+    uint16_t pn = ++s_pnum;
+    size_t n = radex_req_arch_begin(f, sizeof(f), pn, session);
+    if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_BEGIN, res, rl) != 0) return false;
+    pn = ++s_pnum;
+    n = radex_req_arch_hdr(f, sizeof(f), pn);
+    return n != 0 && txn(f, n, pn, RADEX_RPC_ARCH_HDR, res, rl) == 0 && radex_parse_arch_hdr(*res, *rl, h);
+}
+
 static void j_run(void)
 {
     s_j_pending = false;
@@ -284,36 +301,49 @@ static void j_run(void)
     size_t rl = 0, n;
     uint16_t pn;
     char st[48];
+    static radex_arch_hdr_t h;   // 300+ байт — не на стек задачи
 
-    pn = ++s_pnum; n = radex_req_arch_begin(f, sizeof(f), pn);
-    if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_BEGIN, &res, &rl) != 0) { j_finish(false, "usb: step 1 (0x0C04)"); return; }
-
-    radex_arch_hdr_t h;
-    pn = ++s_pnum; n = radex_req_arch_hdr(f, sizeof(f), pn);
-    if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_HDR, &res, &rl) != 0 || !radex_parse_arch_hdr(res, rl, &h)) {
-        j_finish(false, "usb: step 2 (0x0C0D)"); return;
+    // Индекс текущей сессии — из 0x0BC2 (@76); RadexDC шлёт его в 0x0C04 ДО заголовка.
+    radex_current_t c;
+    if (!poll_current(&c)) { j_finish(false, "usb: step 0 (0x0BC2)"); return; }
+    uint8_t session = (uint8_t)(c.session > 0xFF ? 0 : c.session);
+    if (!j_begin(session, &h, &res, &rl)) { j_finish(false, "usb: step 1-2 (0x0C04/0x0C0D)"); return; }
+    if (h.cur_session != session && h.cur_session <= 0xFF) {
+        // смещение @76 — гипотеза по двум трассам; заголовок авторитетнее — один повтор с его значением
+        ESP_LOGW(TAG, "журнал: сессия по 0x0BC2 = %u, по заголовку = %u — повторяю 0x0C04", (unsigned)session, (unsigned)h.cur_session);
+        session = (uint8_t)h.cur_session;
+        if (!j_begin(session, &h, &res, &rl) || h.cur_session != session) { j_finish(false, "usb: session mismatch"); return; }
     }
     radex_journal_raw_store(&s_jwork.summary_pkt[0], res, rl);
     s_jwork.n_summary_pkt = 1;
+    uint32_t total = 0;
+    for (uint8_t i = 0; i < h.n_sess; i++) total += h.sess[i].count;
+    if (h.chain_ok && total != (uint32_t)h.last_gidx + 1) {
+        snprintf(st, sizeof(st), "usb: header %lu != %u+1", (unsigned long)total, (unsigned)h.last_gidx);
+        j_finish(false, st); return;
+    }
     s_jwork.have_summary = true;
     s_jwork.summary.seq = 0;
-    s_jwork.summary.raw2 = h.last_idx;
-    s_jwork.summary.raw4 = h.raw2;
-    s_jwork.summary.last_record = h.last_record;
-    s_jwork.summary.time_raw = h.time_s2000;   // уточняется часами прибора ниже
-    s_jwork.summary.avg = h.avg;
-    s_jwork.summary.sko = h.sko;
-    s_jwork.req_from = h.last_idx;
-    if (h.last_record == 0) { j_finish(false, "usb: archive empty"); return; }
-    uint16_t want = h.last_record > RADEX_J_MAX_REC ? RADEX_J_MAX_REC : h.last_record;
-    s_jwork.truncated = h.last_record > RADEX_J_MAX_REC;
+    s_jwork.summary.raw2 = h.last_gidx;
+    s_jwork.summary.raw4 = h.cur_session;
+    s_jwork.summary.last_record = h.sess[0].count;
+    s_jwork.summary.time_raw = h.sess[0].end_s2000;   // уточняется часами прибора ниже
+    s_jwork.summary.avg = h.sess[0].avg;
+    s_jwork.summary.sko = h.sess[0].sko;
+    s_jwork.req_from = h.last_gidx;
+    if (total == 0) { j_finish(false, "usb: archive empty"); return; }
+    uint16_t want = total > RADEX_J_MAX_REC ? RADEX_J_MAX_REC : (uint16_t)total;
+    s_jwork.truncated = total > RADEX_J_MAX_REC;
 
-    pn = ++s_pnum; n = radex_req_arch_seek(f, sizeof(f), pn, h.last_idx);
+    pn = ++s_pnum; n = radex_req_arch_seek(f, sizeof(f), pn, h.last_gidx);
     if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_SEEK, &res, &rl) != 0) { j_finish(false, "usb: step 3 (0x0C05)"); return; }
 
-    uint16_t expect = h.last_record;
-    bool done = false;
-    for (int page = 0; page < J_MAX_PAGES && !done && s_jwork.n_records < want; page++) {
+    // Ожидаемая пара (сессия, номер): начинаем с последней записи новейшей сессии, пустые сессии пропускаем.
+    uint8_t si = 0;
+    uint16_t exp_sess = h.cur_session;
+    uint16_t exp_idx = h.sess[0].count;
+    while (exp_idx == 0 && si + 1 < h.n_sess) { exp_sess = h.sess[si].prev_session; si++; exp_idx = h.sess[si].count; }
+    for (int page = 0; page < J_MAX_PAGES && s_jwork.n_records < want; page++) {
         pn = ++s_pnum; n = radex_req_arch_page(f, sizeof(f), pn);
         if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_PAGE, &res, &rl) != 0) {
             snprintf(st, sizeof(st), "usb: step 4 page %d (0x0C0E)", page);
@@ -323,15 +353,17 @@ static void j_run(void)
         int k = radex_parse_arch_page(res, rl, recs, RADEX_ARCH_PAGE_RECS);
         if (k <= 0) { snprintf(st, sizeof(st), "usb: page %d empty", page); j_finish(false, st); return; }
         for (int i = 0; i < k && s_jwork.n_records < want; i++) {
-            if (recs[i].idx != expect) {
+            if (exp_idx == 0) { j_finish(false, "usb: more records than header"); return; }
+            if (recs[i].raw0 != exp_sess || recs[i].idx != exp_idx) {
                 s_jwork.seq_mismatch = true;
-                snprintf(st, sizeof(st), "usb: seq %u != %u", (unsigned)recs[i].idx, (unsigned)expect);
+                snprintf(st, sizeof(st), "usb: seq %u/%u != %u/%u", (unsigned)recs[i].raw0, (unsigned)recs[i].idx,
+                         (unsigned)exp_sess, (unsigned)exp_idx);
                 j_finish(false, st); return;
             }
             radex_journal_record_t *r = &s_jwork.records[s_jwork.n_records];
             memset(r, 0, sizeof(*r));
-            r->seq = recs[i].raw0;
-            r->number = recs[i].idx;
+            r->seq = recs[i].raw0;                            // по USB: индекс сессии прибора
+            r->number = recs[i].idx;                          // номер внутри сессии
             r->time_raw = recs[i].time_s2000;
             r->oa = recs[i].oa;
             r->unk_f10 = recs[i].avg;                         // по USB опознано: скользящее среднее
@@ -342,16 +374,18 @@ static void j_run(void)
             radex_journal_raw_store(&s_jwork.record_pkt[s_jwork.n_record_pkt++],
                                     res + 4 + (size_t)i * RADEX_ARCH_REC_LEN, RADEX_ARCH_REC_LEN);
             s_jwork.n_records++;
-            if (expect == 1) { done = true; break; }
-            expect--;
+            exp_idx--;
+            while (exp_idx == 0 && si + 1 < h.n_sess) { exp_sess = h.sess[si].prev_session; si++; exp_idx = h.sess[si].count; }
         }
     }
-    if (s_jwork.n_records == 0) { j_finish(false, "usb: no records"); return; }
+    if (s_jwork.n_records < want) {
+        snprintf(st, sizeof(st), "usb: got %u of %u records", (unsigned)s_jwork.n_records, (unsigned)want);
+        j_finish(false, st); return;
+    }
 
     // #RADEX-293 калибровка: offset = часы шлюза - summary.time_raw (journal_calib.h). По USB время
     // записей — в эпохе часов прибора, поэтому точка отсчёта — ЧАСЫ ПРИБОРА сейчас (0x0BC2), а не
     // время последней записи (так по BLE): смещение точное, а не с ошибкой до цикла 600 с.
-    radex_current_t c;
     if (poll_current(&c) && s_have_dev_clock) s_jwork.summary.time_raw = s_dev_clock_s2000;
     else ESP_LOGW(TAG, "журнал: часы прибора не прочитаны — отсчёт от последней записи, как по BLE");
     j_finish(true, "ok");

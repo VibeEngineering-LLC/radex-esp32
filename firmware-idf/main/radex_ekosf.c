@@ -34,11 +34,18 @@ static size_t build_rpc(uint8_t *out, size_t cap, uint16_t pnum, uint16_t rpc, u
     return total;
 }
 
-// Параметры 0x0C04 — байт-в-байт из трассы captures/radex_usb_02_archive.pcap.
+// Общая форма параметров 0x0C04/0x0C05 — байт-в-байт из трасс 02 и 04: 04000000 <u16> 0100.
 static const uint8_t P_ARCH_BEGIN[8] = {0x04,0x00,0x00,0x00, 0x00,0x00, 0x01,0x00};
 
 size_t radex_req_current(uint8_t *out, size_t cap, uint16_t pnum) { return build_rpc(out, cap, pnum, RADEX_RPC_CURRENT, RADEX_SIG_READ, NULL, 0); }
-size_t radex_req_arch_begin(uint8_t *out, size_t cap, uint16_t pnum) { return build_rpc(out, cap, pnum, RADEX_RPC_ARCH_BEGIN, RADEX_SIG_ARCH, P_ARCH_BEGIN, 8); }
+// 0x0C04: u16 = индекс текущей сессии (трасса 02: 0000 при одной сессии, трасса 04: 0100 при двух).
+size_t radex_req_arch_begin(uint8_t *out, size_t cap, uint16_t pnum, uint8_t session)
+{
+    uint8_t p[8];
+    memcpy(p, P_ARCH_BEGIN, 8);
+    p[4] = session;
+    return build_rpc(out, cap, pnum, RADEX_RPC_ARCH_BEGIN, RADEX_SIG_ARCH, p, 8);
+}
 size_t radex_req_arch_hdr(uint8_t *out, size_t cap, uint16_t pnum) { return build_rpc(out, cap, pnum, RADEX_RPC_ARCH_HDR, RADEX_SIG_READ, NULL, 0); }
 size_t radex_req_arch_page(uint8_t *out, size_t cap, uint16_t pnum) { return build_rpc(out, cap, pnum, RADEX_RPC_ARCH_PAGE, RADEX_SIG_READ, NULL, 0); }
 
@@ -80,7 +87,7 @@ bool radex_req_allowed(const uint8_t *f, size_t n)
     case RADEX_RPC_CURRENT: case RADEX_RPC_ARCH_HDR: case RADEX_RPC_ARCH_PAGE:
         return sig == RADEX_SIG_READ && plen == 0;
     case RADEX_RPC_ARCH_BEGIN:
-        return sig == RADEX_SIG_ARCH && plen == 8 && memcmp(p, P_ARCH_BEGIN, 8) == 0;
+        return sig == RADEX_SIG_ARCH && plen == 8 && memcmp(p, P_ARCH_BEGIN, 4) == 0 && p[5] == 0x00 && p[6] == 0x01 && p[7] == 0x00;
     case RADEX_RPC_ARCH_SEEK:
         return sig == RADEX_SIG_ARCH && plen == 8 && memcmp(p, P_ARCH_BEGIN, 4) == 0 && p[6] == 0x01 && p[7] == 0x00;
     case RADEX_RPC_SET_TIME: {
@@ -121,8 +128,12 @@ bool radex_parse_current(const uint8_t *res, size_t n, radex_current_t *out)
     if (rd32(res) < RADEX_CUR_BLOCK_LEN) return false;
     const uint8_t *d = res + 4;
     out->avg = rdf(d + 0);
+    out->sko = rdf(d + 4);
     out->counter = rd32(d + 8);
+    out->last_oa = rdf(d + 12);
     out->cur = rdf(d + 20);
+    out->sessions = rd16(d + 74);
+    out->session = rd16(d + 76);
     out->temp_c = (float)(int16_t)rd16(d + 64) / 10.0f;
     out->rh = (float)rd16(d + 68);
     out->ss = d[80]; out->mm = d[81]; out->hh = d[82]; out->dd = d[83]; out->mo = d[84]; out->yy = d[85];
@@ -132,12 +143,19 @@ bool radex_parse_current(const uint8_t *res, size_t n, radex_current_t *out)
 
 bool radex_parse_arch_hdr(const uint8_t *res, size_t n, radex_arch_hdr_t *out)
 {
-    if (res == NULL || out == NULL || n < 4 + 18) return false;
-    if (rd32(res) < 18) return false;
+    if (res == NULL || out == NULL || n < 4 + 4 + RADEX_ARCH_SESS_LEN) return false;
+    size_t avail = n - 4;
+    if (rd32(res) < avail) avail = rd32(res);
     const uint8_t *d = res + 4;
-    out->last_idx = rd16(d + 0); out->raw2 = rd16(d + 2); out->last_record = rd16(d + 4);
-    out->time_s2000 = rd32(d + 6); out->avg = rdf(d + 10); out->sko = rdf(d + 14);
-    return true;
+    memset(out, 0, sizeof(*out));
+    out->last_gidx = rd16(d + 0); out->cur_session = rd16(d + 2);
+    for (size_t off = 4; off + RADEX_ARCH_SESS_LEN <= avail && out->n_sess < RADEX_ARCH_MAX_SESS; off += RADEX_ARCH_SESS_LEN) {
+        radex_arch_sess_t *s = &out->sess[out->n_sess++];
+        s->count = rd16(d + off); s->end_s2000 = rd32(d + off + 2); s->avg = rdf(d + off + 6);
+        s->sko = rdf(d + off + 10); s->prev_gidx = rd16(d + off + 14); s->prev_session = rd16(d + off + 16);
+        if (s->prev_gidx == 0xFFFF) { out->chain_ok = true; break; }   // самая старая сессия
+    }
+    return out->n_sess > 0;
 }
 
 int radex_parse_arch_page(const uint8_t *res, size_t n, radex_arch_rec_t *out, int max)

@@ -133,6 +133,39 @@ int main(int argc, char **argv)
     CHECK(k == 22 && r[14].raw0 == 0 && r[14].idx == 264 && r[14].time_s2000 == radex_s2000(2026, 9, 18, 14, 55, 13),
           "за ней сразу сессия 0 №264 (14:55:13) — страницы идут сквозь сессии");
 
+    // 4b. USB-запись -> запись журнала: oa = СКОЛЬЗЯЩЕЕ среднее (как в BLE-разборе), unk_f10 = сырая ОА (v1.13.0 было наоборот)
+    radex_journal_record_t j;
+    radex_arch_to_journal(&r[0], &j);
+    CHECK(fabsf(j.oa - 93.66f) < 0.01f && fabsf(j.unk_f10 - 118.0f) < 0.01f && j.raw2 == 1 && j.seq == 13 && j.number == 14,
+          "сессия 1 №14: oa 93.66 (скольз.), unk_f10 118.0 (сырая), raw2 = сессия 1, seq 13");
+    radex_arch_to_journal(&r[13], &j);
+    CHECK(fabsf(j.oa - 106.67f) < 0.01f && j.number == 1 && j.seq == 0, "сессия 1 №1: oa 106.67");
+    radex_arch_to_journal(&r[14], &j);
+    CHECK(fabsf(j.oa - 79.31f) < 0.01f && fabsf(j.unk_f10 - 97.33f) < 0.01f && j.raw2 == 0 && j.seq == 263,
+          "сессия 0 №264: oa 79.31 (= BLE на плате), unk_f10 97.33 (сырая)");
+
+    // 5. 1:1 с BLE-разбором. BLE_REC3 — запись №3 из захвата BLE (test_journal_parse.c, REC3); USB-запись №3 трассы 02 =
+    // те же байты без 2-байтового префикса. Значит, ВСЕ поля журнала по USB обязаны совпасть с BLE-разбором.
+    static const uint8_t BLE_REC3[24] = {0x02,0x00,0x00,0x00,0x03,0x00,0xa9,0xa9,0x3d,0x32,0x56,0x55,0x9d,0x42,0x9b,0x6c,
+                                         0xfa,0x42,0x07,0x01,0x00,0x00,0x2a,0x10};
+    radex_journal_record_t jb;
+    res = result_of("t02_rsp_arch_page_last", RADEX_RPC_ARCH_PAGE, &rl);
+    k = radex_parse_arch_page(res, rl, r, RADEX_ARCH_PAGE_RECS);
+    int i3 = -1;
+    for (int i = 0; i < k; i++) if (r[i].raw0 == 0 && r[i].idx == 3) i3 = i;
+    CHECK(i3 >= 0 && memcmp(res + 4 + i3 * RADEX_ARCH_REC_LEN, BLE_REC3 + 2, RADEX_ARCH_REC_LEN) == 0,
+          "трасса 02, USB-запись №3 = BLE REC3 без префикса (сдвиг на 2 байта)");
+    CHECK(radex_journal_parse_record(BLE_REC3, 24, &jb) == RADEX_J_OK && i3 >= 0, "BLE-разбор REC3 принят");
+    if (i3 >= 0) radex_arch_to_journal(&r[i3], &j);
+    CHECK(i3 >= 0 && j.oa == jb.oa && j.unk_f10 == jb.unk_f10 && j.seq == jb.seq && j.raw2 == jb.raw2 && j.number == jb.number
+          && j.time_raw == jb.time_raw && j.temp_x10 == jb.temp_x10 && j.raw20 == jb.raw20 && j.humidity == jb.humidity
+          && j.flags == jb.flags, "все поля журнала по USB (№3) совпали с BLE-разбором (1:1)");
+    CHECK(i3 >= 0 && fabsf(j.oa - 125.21f) < 0.01f && fabsf(j.unk_f10 - 78.67f) < 0.01f, "№3: oa 125.21 (скольз.), unk_f10 78.67 (сырая)");
+    res = result_of("t02_rsp_arch_page", RADEX_RPC_ARCH_PAGE, &rl);
+    k = radex_parse_arch_page(res, rl, r, RADEX_ARCH_PAGE_RECS);
+    radex_arch_to_journal(&r[1], &j);
+    CHECK(k == 22 && j.number == 263 && fabsf(j.oa - 77.69f) < 0.01f && fabsf(j.unk_f10 - 73.33f) < 0.01f, "трасса 02 №263: oa 77.69 (скольз.), unk_f10 73.33 (сырая)");
+
     printf(fails ? "\nПРОВАЛОВ: %d\n" : "\nвсе проверки прошли\n", fails);
     return fails;
 }

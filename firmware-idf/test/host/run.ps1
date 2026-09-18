@@ -15,7 +15,7 @@ t tg "" test/host/test_radon_test_guard.c
 t tjc "" test/host/test_journal_calib.c
 t thc "" test/host/test_http_cache.c
 t tue test/host/radex_usb_vectors.txt test/host/test_radex_ekosf.c main/radex_ekosf.c
-t tus test/host/radex_usb_vectors.txt test/host/test_radex_sessions.c main/radex_ekosf.c
+t tus test/host/radex_usb_vectors.txt test/host/test_radex_sessions.c main/radex_ekosf.c main/radex_journal_parse.c
 echo "C-TESTS: built=$n failed=$f"
 [ $n -gt 0 ] || { echo "FATAL: no C test binary was built (CRLF in the script? gcc missing?)"; exit 99; }
 exit $f

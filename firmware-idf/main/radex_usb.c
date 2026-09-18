@@ -401,17 +401,9 @@ static void j_run(void)
                          (unsigned)exp_sess, (unsigned)exp_idx);
                 j_finish(false, st); return;
             }
-            radex_journal_record_t *r = &s_jwork.records[s_jwork.n_records];
-            memset(r, 0, sizeof(*r));
-            r->seq = recs[i].raw0;                            // по USB: индекс сессии прибора
-            r->number = recs[i].idx;                          // номер внутри сессии
-            r->time_raw = recs[i].time_s2000;
-            r->oa = recs[i].oa;
-            r->unk_f10 = recs[i].avg;                         // по USB опознано: скользящее среднее
-            r->temp_x10 = (uint16_t)(recs[i].t_x10 & 0xFFFF);
-            r->raw20 = (uint16_t)(recs[i].t_x10 >> 16);
-            r->humidity = recs[i].rh;
-            r->flags = recs[i].flags;
+            // Соответствие полей USB-записи и BLE-записи (сдвиг на 2 байта, oa = скользящее среднее) — в
+            // radex_arch_to_journal(), покрыто хост-тестом test_radex_sessions.c.
+            radex_arch_to_journal(&recs[i], &s_jwork.records[s_jwork.n_records]);
             radex_journal_raw_store(&s_jwork.record_pkt[s_jwork.n_record_pkt++],
                                     res + 4 + (size_t)i * RADEX_ARCH_REC_LEN, RADEX_ARCH_REC_LEN);
             s_jwork.n_records++;

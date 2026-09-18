@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "radex_journal_parse.h"   // radex_journal_record_t (чистый заголовок, без ESP-IDF)
 
 #define RADEX_USB_VID   0xABBA
 #define RADEX_USB_PID   0xA204
@@ -108,14 +109,20 @@ typedef struct {
     uint16_t raw0;        // @0  индекс сессии (трасса 04: 1 у новых, 0 у старых); страницы идут сквозь сессии
     uint16_t idx;         // @2  номер записи
     uint32_t time_s2000;  // @4  с от 2000-01-01 (местное)
-    float    oa;          // @8  ОА, Бк/м3
-    float    avg;         // @12 скользящее среднее, Бк/м3
+    float    oa;          // @8  СЫРАЯ ОА цикла, Бк/м3 (в BLE-записи это unk_f10 @10)
+    float    avg;         // @12 скользящее среднее, Бк/м3 (в BLE-записи это oa @14; его показывает экран)
     uint32_t t_x10;       // @16 температура ×10
     uint8_t  rh;          // @20 влажность, %
     uint8_t  flags;       // @21 (в трассе 0x10)
 } radex_arch_rec_t;
 // Возврат: число разобранных записей (до первой записи из одних 0xFF), -1 — результат короче 4 байт.
 int radex_parse_arch_page(const uint8_t *res, size_t n, radex_arch_rec_t *out, int max);
+
+// Запись архива USB -> запись журнала (структура BLE-разбора radex_journal_parse.h). BLE-запись (24 байта)
+// = USB-запись (22 байта) со сдвигом на 2 байта: BLE @N = USB @N-2. Поэтому oa (BLE @14) = USB @12 =
+// СКОЛЬЗЯЩЕЕ среднее, unk_f10 (BLE @10) = USB @8 = сырая ОА цикла, raw2 (BLE @2) = индекс сессии,
+// seq (BLE @0, в USB-записи нет) = номер-1. Сверено на BLE-записи №3 (125,21 / 78,67) и №264 (79,31 / 97,33).
+void radex_arch_to_journal(const radex_arch_rec_t *a, radex_journal_record_t *r);
 
 // Календарь прибора: секунды / миллисекунды от 2000-01-01 00:00:00 (поля местного времени).
 int64_t  radex_days_from_civil(int y, int m, int d);

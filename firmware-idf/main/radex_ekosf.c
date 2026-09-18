@@ -178,6 +178,22 @@ int radex_parse_arch_page(const uint8_t *res, size_t n, radex_arch_rec_t *out, i
     return k;
 }
 
+// Соответствие полей — в radex_ekosf.h (сдвиг на 2 байта относительно BLE-записи).
+void radex_arch_to_journal(const radex_arch_rec_t *a, radex_journal_record_t *r)
+{
+    memset(r, 0, sizeof(*r));
+    r->seq = (uint16_t)(a->idx - 1);
+    r->raw2 = a->raw0;
+    r->number = a->idx;
+    r->time_raw = a->time_s2000;
+    r->unk_f10 = a->oa;
+    r->oa = a->avg;
+    r->temp_x10 = (uint16_t)(a->t_x10 & 0xFFFF);
+    r->raw20 = (uint16_t)(a->t_x10 >> 16);
+    r->humidity = a->rh;
+    r->flags = a->flags;
+}
+
 // Дни от 1970-01-01 (алгоритм H. Hinnant, days_from_civil).
 int64_t radex_days_from_civil(int y, int m, int d)
 {

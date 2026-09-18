@@ -27,6 +27,11 @@ CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=0
 # Сборка универсальная: USB (плата — USB-host в OTG-разъёме, прибор — CDC-ACM) и
 # BLE в одном образе, выбор при работе (main/radex_link.c). Опций выбора нет.
 
+# Установка часов прибора (RPC 0x0006) ВЫКЛЮЧЕНА (v1.13.1): установка времени закрывает текущую
+# сессию замера на приборе (наблюдение RadexDC), с платы не проверялась. Включить —
+# CONFIG_RADEX_USB_CLOCK_SYNC=y; порог расхождения — CONFIG_RADEX_USB_CLOCK_MAX_DRIFT_S.
+CONFIG_RADEX_USB_CLOCK_SYNC=n
+
 # ── Bluetooth: только BLE, Bluedroid ────────────────────────────────────────
 CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=y

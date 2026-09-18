@@ -42,6 +42,11 @@ static const char *TAG = "radex_usb";
 #define USB_ERR_REOPEN       3       // столько ошибок опроса подряд — закрыть и открыть заново
 #define USB_RX_BUF           2048    // длиннейший ответ (страница архива) — 506 байт
 #define J_MAX_PAGES          4       // 64 записи = 3 страницы по 22; +1 запас
+// Паузы как у RadexDC (сырые кадры трасс 02/04): 0x0C05 -> первый 0x0C0E через ~103 мс, между страницами
+// ~125 мс; ответы на 0x0C0E приходят за 0,6 мс — страница, видимо, готовится прибором заранее. Без паузы
+// живая плата (025d9b8) получила страницу с чужой позиции: «seq 0/256 != 1/15».
+#define J_SEEK_SETTLE_MS     150
+#define J_PAGE_GAP_MS        100
 
 static ble_radex_cb_t        s_cb;
 static cdc_acm_dev_hdl_t     s_dev;
@@ -257,6 +262,28 @@ static void clock_sync_maybe(void)
 #endif
 
 // ── Журнал (архив прибора) ───────────────────────────────────────────────
+// Диагностика архива в /api/log: hex кадра или результата, первые 32 байта.
+static void j_hex(const char *what, const uint8_t *p, size_t n)
+{
+    char hex[32 * 2 + 1];
+    size_t m = n > 32 ? 32 : n;
+    for (size_t i = 0; i < m; i++) snprintf(hex + i * 2, 3, "%02x", p[i]);
+    hex[m * 2] = '\0';
+    ESP_LOGI(TAG, "журнал %s (%u байт): %s", what, (unsigned)n, hex);
+}
+
+// 0x0C05 + пауза, как у RadexDC.
+static bool j_seek(uint16_t gidx, const uint8_t **res, size_t *rl)
+{
+    uint8_t f[EKOSF_TX_MAX];
+    uint16_t pn = ++s_pnum;
+    size_t n = radex_req_arch_seek(f, sizeof(f), pn, gidx);
+    if (n) j_hex("TX 0x0C05", f, n);
+    if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_SEEK, res, rl) != 0) return false;
+    vTaskDelay(pdMS_TO_TICKS(J_SEEK_SETTLE_MS));
+    return true;
+}
+
 static void j_finish(bool ok, const char *status)
 {
     s_jwork.valid = true;
@@ -284,6 +311,7 @@ static bool j_begin(uint8_t session, radex_arch_hdr_t *h, const uint8_t **res, s
     uint8_t f[EKOSF_TX_MAX];
     uint16_t pn = ++s_pnum;
     size_t n = radex_req_arch_begin(f, sizeof(f), pn, session);
+    if (n) j_hex("TX 0x0C04", f, n);
     if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_BEGIN, res, rl) != 0) return false;
     pn = ++s_pnum;
     n = radex_req_arch_hdr(f, sizeof(f), pn);
@@ -335,8 +363,8 @@ static void j_run(void)
     uint16_t want = total > RADEX_J_MAX_REC ? RADEX_J_MAX_REC : (uint16_t)total;
     s_jwork.truncated = total > RADEX_J_MAX_REC;
 
-    pn = ++s_pnum; n = radex_req_arch_seek(f, sizeof(f), pn, h.last_gidx);
-    if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_SEEK, &res, &rl) != 0) { j_finish(false, "usb: step 3 (0x0C05)"); return; }
+    if (!j_seek(h.last_gidx, &res, &rl)) { j_finish(false, "usb: step 3 (0x0C05)"); return; }
+    bool reseek_done = false;
 
     // Ожидаемая пара (сессия, номер): начинаем с последней записи новейшей сессии, пустые сессии пропускаем.
     uint8_t si = 0;
@@ -344,14 +372,26 @@ static void j_run(void)
     uint16_t exp_idx = h.sess[0].count;
     while (exp_idx == 0 && si + 1 < h.n_sess) { exp_sess = h.sess[si].prev_session; si++; exp_idx = h.sess[si].count; }
     for (int page = 0; page < J_MAX_PAGES && s_jwork.n_records < want; page++) {
+        if (page > 0) vTaskDelay(pdMS_TO_TICKS(J_PAGE_GAP_MS));
         pn = ++s_pnum; n = radex_req_arch_page(f, sizeof(f), pn);
         if (n == 0 || txn(f, n, pn, RADEX_RPC_ARCH_PAGE, &res, &rl) != 0) {
             snprintf(st, sizeof(st), "usb: step 4 page %d (0x0C0E)", page);
             j_finish(false, st); return;
         }
+        j_hex("RX 0x0C0E", res, rl);
         radex_arch_rec_t recs[RADEX_ARCH_PAGE_RECS];
         int k = radex_parse_arch_page(res, rl, recs, RADEX_ARCH_PAGE_RECS);
         if (k <= 0) { snprintf(st, sizeof(st), "usb: page %d empty", page); j_finish(false, st); return; }
+        if (page == 0 && !reseek_done && (recs[0].raw0 != exp_sess || recs[0].idx != exp_idx)) {
+            // первая страница не с той позиции — один повтор 0x0C05 (пауза перед ним и после него)
+            ESP_LOGW(TAG, "журнал: первая страница с %u/%u, ждали %u/%u — повторяю 0x0C05", (unsigned)recs[0].raw0,
+                     (unsigned)recs[0].idx, (unsigned)exp_sess, (unsigned)exp_idx);
+            reseek_done = true;
+            vTaskDelay(pdMS_TO_TICKS(J_SEEK_SETTLE_MS));
+            if (!j_seek(h.last_gidx, &res, &rl)) { j_finish(false, "usb: step 3 retry (0x0C05)"); return; }
+            page = -1;
+            continue;
+        }
         for (int i = 0; i < k && s_jwork.n_records < want; i++) {
             if (exp_idx == 0) { j_finish(false, "usb: more records than header"); return; }
             if (recs[i].raw0 != exp_sess || recs[i].idx != exp_idx) {

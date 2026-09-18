@@ -11,6 +11,7 @@ gcc $W -o /tmp/tu test/host/test_label_utf8.c main/label_utf8.c && /tmp/tu || f=
 gcc $W -o /tmp/tg test/host/test_radon_test_guard.c && /tmp/tg || f=$((f+1))
 gcc $W -o /tmp/tjc test/host/test_journal_calib.c && /tmp/tjc || f=$((f+1))
 gcc $W -o /tmp/thc test/host/test_http_cache.c && /tmp/thc || f=$((f+1))
+gcc $W -o /tmp/tue test/host/test_radex_ekosf.c main/radex_ekosf.c -lm && /tmp/tue test/host/radex_usb_vectors.txt || f=$((f+1))
 exit $f
 '@
 $f = $LASTEXITCODE

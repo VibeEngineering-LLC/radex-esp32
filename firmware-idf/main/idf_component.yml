@@ -6,3 +6,10 @@ dependencies:
   # там компоненты в ядре, поэтому файл различается у площадок сборки.
   espressif/mqtt: "*"
   espressif/cjson: "*"
+  # #USB-1: USB-транспорт к прибору (Kconfig RADEX_TRANSPORT_USB). Та же версия, что у
+  # доноров atomspectra-waterfall / bdkg05-esp32-bridge (dependencies.lock: 2.4.0);
+  # на IDF >= 6.0 сама тянет espressif/usb (USB Host Library вынесена из ядра).
+  espressif/usb_host_cdc_acm:
+    version: "^2.4.0"
+    rules:
+      - if: "target in [esp32s2, esp32s3, esp32p4]"

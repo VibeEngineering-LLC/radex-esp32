@@ -1511,9 +1511,16 @@ static esp_err_t handle_system(httpd_req_t *req)
     static const int8_t BLE_DBM[] = {
         -24, -21, -18, -15, -12, -9, -6, -3, 0, 3, 6, 9, 12, 15, 18, 20
     };
+#if CONFIG_RADEX_TRANSPORT_USB
+    /* #USB-1: при USB-транспорте контроллер BLE не запускается — спрашивать у него
+       мощность нельзя. Поле ble_tx_dbm остаётся в JSON (формат 1:1), значение 0. */
+    int ble_dbm = 0;
+    (void)BLE_DBM;
+#else
     esp_power_level_t lvl = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT);
     int ble_dbm = ((int)lvl >= 0 && (int)lvl < (int)(sizeof(BLE_DBM)/sizeof(BLE_DBM[0])))
                   ? BLE_DBM[(int)lvl] : 0;
+#endif
 
     char buf[512];
     /* #RADEX-188: адрес прибора, к которому привязана плата. MAC в эфире может

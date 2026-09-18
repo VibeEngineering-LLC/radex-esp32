@@ -2,10 +2,19 @@
 # компонентов сборки; явный список (как в CMakeLists донора) обрезал зависимости
 # и ломал линковку Bluedroid — undefined reference to esp_ble_gattc_open.
 # У донора BLE нет, поэтому его список зависимостей нам не годится.
+# #USB-1: канал связи с прибором — Kconfig RADEX_TRANSPORT (main/Kconfig.projbuild).
+# USB-транспорт реализует ТЕ ЖЕ функции ble_radex.h / ble_radex_journal.h, поэтому
+# собирается ВМЕСТО BLE-файлов; всё выше шва (веб, API, история, журнал) не меняется.
+if(CONFIG_RADEX_TRANSPORT_USB)
+    set(RADEX_TRANSPORT_SRCS "radex_usb.c" "radex_ekosf.c")
+else()
+    set(RADEX_TRANSPORT_SRCS "ble_radex.c" "ble_radex_journal.c")
+endif()
+
 idf_component_register(
     SRCS
         "main.c"
-        "ble_radex.c"
+        ${RADEX_TRANSPORT_SRCS}   # #USB-1: BLE или USB — см. выбор выше
         "radex_data.c"
         "web_server.c"
         "ha_mqtt.c"
@@ -18,7 +27,6 @@ idf_component_register(
         "net_time.c"
         "http_io_gate.c"
         "radex_journal_parse.c"   # #RADEX-281: чистый разбор, хост-тест test/host
-        "ble_radex_journal.c"     # #RADEX-281: сеанс чтения журнала по NUS
         "radex_journal_track.c"   # #RADEX-281: привязка квитанций/notify к шагу, хост-тест
         "target_label.c"          # #RADEX-283: имя замера и сравнение MAC, хост-тест
         "target_switch.c"         # #RADEX-283: смена прибора с сохранением замера

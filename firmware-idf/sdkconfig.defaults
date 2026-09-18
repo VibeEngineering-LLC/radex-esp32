@@ -9,6 +9,12 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 
+# ── Канал связи с прибором (#USB-1, main/Kconfig.projbuild) ─────────────────
+# По умолчанию для новой сборки — USB (плата — USB-host в OTG-разъёме, прибор —
+# CDC-ACM). BLE-стек ниже остаётся в сборке: переключение обратно — одной опцией
+# CONFIG_RADEX_TRANSPORT_BLE=y (sdkconfig/menuconfig), без правки кода.
+CONFIG_RADEX_TRANSPORT_USB=y
+
 # ── Bluetooth: только BLE, Bluedroid ────────────────────────────────────────
 CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=y

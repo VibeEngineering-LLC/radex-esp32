@@ -1521,7 +1521,7 @@ static esp_err_t handle_system(httpd_req_t *req)
                   ? BLE_DBM[(int)lvl] : 0;
     }
 
-    char buf[576];   /* #USB-1: +bt_enabled */
+    char buf[704];   /* #USB-1: +bt_enabled, +int_free/int_min/int_largest/dma_free */
     /* #RADEX-188: адрес прибора, к которому привязана плата. MAC в эфире может
        принадлежать чужому Radex, и раньше по Web UI это было никак не видно. */
     char dev_mac[18] = "";
@@ -1539,6 +1539,9 @@ static esp_err_t handle_system(httpd_req_t *req)
     int n = snprintf(buf, sizeof(buf),
         "{\"fw\":\"%s\",\"uptime_sec\":%lld,\"free_heap\":%u,\"heap_total\":%u,\"min_free_heap\":%u,"
         "\"psram_free\":%u,\"wifi_rssi\":%d,\"wifi_connected\":%s,\"ap_mode\":%s,"
+        /* #USB-1 диагностика регресса страницы: ВНУТРЕННЯЯ память (из неё берут буферы Wi-Fi и
+           lwIP при отправке), free_heap выше включает PSRAM и её нехватку не показывает. */
+        "\"int_free\":%u,\"int_min\":%u,\"int_largest\":%u,\"dma_free\":%u,"
         /* #RADEX-171/172: наблюдаемость защиты от гонки. io_rejects — сколько
            тяжёлых запросов получили 503 (это НЕ ошибка, полоса работает как
            задумано); lock_timeouts — сколько раз мьютекс истории НЕ достался
@@ -1557,9 +1560,11 @@ static esp_err_t handle_system(httpd_req_t *req)
         (unsigned)heap_caps_get_total_size(MALLOC_CAP_DEFAULT),
         (unsigned)esp_get_minimum_free_heap_size(),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-        rssi,
-        wifi_is_connected() ? "true" : "false",
-        wifi_manager_is_ap_mode() ? "true" : "false",
+        rssi, wifi_is_connected() ? "true" : "false", wifi_manager_is_ap_mode() ? "true" : "false",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
         wifi_dbm, ble_dbm,
         (unsigned)http_io_gate_reject_count(),
         (unsigned)radon_stats_lock_timeouts(),

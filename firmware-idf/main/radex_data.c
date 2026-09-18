@@ -1,5 +1,6 @@
 #include "radex_data.h"
 #include "ble_radex.h"
+#include "radex_link.h"   /* #USB-1: поле transport */
 
 #include <stdio.h>
 #include <string.h>
@@ -81,7 +82,7 @@ int radex_data_json(char *buf, size_t len)
         "{\"valid\":%s,\"radon_last\":%s,\"radon_avg\":%s,"
         "\"temperature\":%s,\"humidity\":%s,\"age_ms\":%lld,\"samples\":%lu,"
         "\"ble_connected\":%s,\"reads_ok\":%lu,\"read_errors\":%lu,\"disconnects\":%lu,\"open_fails\":%lu,"
-        "\"sko_avg\":%s,\"t_izm_sec\":%lu}",
+        "\"sko_avg\":%s,\"t_izm_sec\":%lu,\"transport\":\"%s\"}",   /* #USB-1: usb|ble|none */
         d.valid ? "true" : "false", s_last, s_avg,
         s_temp, s_hum, (long long)age_ms, (unsigned long)d.samples,
         ble_radex_connected() ? "true" : "false",
@@ -89,5 +90,5 @@ int radex_data_json(char *buf, size_t len)
         (unsigned long)ble_radex_read_errors(),
         (unsigned long)ble_radex_disconnects(),
         (unsigned long)ble_radex_open_fails(),
-        s_sko, (unsigned long)d.t_izm_sec);
+        s_sko, (unsigned long)d.t_izm_sec, radex_link_transport_str());
 }

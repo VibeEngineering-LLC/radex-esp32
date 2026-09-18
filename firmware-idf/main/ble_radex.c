@@ -97,6 +97,10 @@ uint16_t s_conn_id;
 uint8_t s_handle_cursor;
 SemaphoreHandle_t s_reconnect_sem;
 static volatile int s_connected = 0;
+/* #USB-1 универсальная сборка: прибор на USB — BLE стоит на паузе (стек поднят, но ни скана,
+   ни соединения, ни попыток открыть). Ставит/снимает только radex_link.c через ble_radex_pause(). */
+static volatile bool s_paused = false;
+static volatile bool s_stack_up = false;   /* контроллер и Bluedroid подняты — можно спрашивать мощность */
 static volatile uint32_t s_conn_gen = 0;   /* #RADEX-281: номер соединения, растёт на каждом open */
 volatile TickType_t s_open_tick;
 volatile int s_mtu_state = 0;
@@ -476,7 +480,9 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             s_gattc_if = gattc_if;
             uint8_t prev = BTA_GATTC_AutoDiscoverEnable(0);
             ESP_LOGW(TAG, "авто-discovery Bluedroid ВЫКЛЮЧЕН (было %d)", (int)prev);
-            if (s_have_target) {
+            if (s_paused) {
+                ESP_LOGI(TAG, "BLE на паузе (прибор на USB) — не подключаюсь и не ищу");   /* #USB-1 */
+            } else if (s_have_target) {
                 esp_ble_gattc_open(gattc_if, s_target_addr, s_target_atype, true);
             } else {
                 scan_start();      // прибор ещё не выбран — ищем и ждём выбора в Web UI
@@ -603,6 +609,7 @@ static void reconnect_task(void *arg)
     (void)arg;
     while (1) {
         xSemaphoreTake(s_reconnect_sem, portMAX_DELAY);
+        if (s_paused) continue;   /* #USB-1: прибор на USB — не переподключаемся */
         /* #RADEX-84: пауза ОБЯЗАТЕЛЬНА до следующей попытки. Без неё контроллер
            получает новую команду открытия раньше, чем закрыл предыдущую, и
            отвечает «Cmd Disallowed» (HCI opcode 0x2043) — попытки не просто
@@ -644,6 +651,7 @@ static void reconnect_task(void *arg)
         }
         vTaskDelay(pdMS_TO_TICKS(200));   /* дать контроллеру закрыть своё состояние */
 #endif
+        if (s_paused) continue;   /* #USB-1: пауза пришла, пока ждали бэкофф */
         ESP_LOGI(TAG, "переподключение (пауза была %lu мс)...", (unsigned long) d);
         s_open_tick = xTaskGetTickCount();
         esp_ble_gattc_open(s_gattc_if, s_target_addr, s_target_atype, true);
@@ -719,6 +727,7 @@ void ble_radex_start(ble_radex_cb_t cb)
         ESP_LOGE(TAG, "ошибка инициализации стека Bluetooth");
         return;
     }
+    s_stack_up = true;   /* #USB-1: с этого момента esp_ble_tx_power_get() законен */
 
     esp_ble_gap_register_callback(gap_event_handler);
     esp_ble_gattc_register_callback(gattc_event_handler);
@@ -811,3 +820,32 @@ uint32_t ble_radex_reads_ok(void)    { return s_read_ok; }
 uint32_t ble_radex_read_errors(void) { return s_read_err; }
 uint32_t ble_radex_disconnects(void) { return s_disconnects; }
 uint32_t ble_radex_open_fails(void) { return s_open_fails; }
+
+// #USB-1: пауза BLE без остановки стека (deinit/reinit Bluedroid на лету здесь не делается: модуль
+// регистрирует колбэки и приложение GATTC один раз). Пауза: скан стоп, соединение закрыть, ждущее
+// открытие отменить; снятие: сразу переподключение к выбранному прибору либо поиск.
+bool ble_radex_stack_up(void) { return s_stack_up; }
+void ble_radex_pause(bool on)
+{
+    if (on == s_paused) return;
+    s_paused = on;
+    s_consec_open_fails = 0;   /* #RADEX-145: отказы из-за паузы не признак залипания контроллера */
+    ESP_LOGW(TAG, "%s", on ? "BLE на паузу: прибор на USB" : "BLE возобновлён: прибора на USB нет");
+    if (!s_stack_up || s_gattc_if == 0) return;   /* приложение GATTC ещё не зарегистрировано: решит REG_EVT */
+    if (on) {
+        if (s_scanning) { esp_ble_gap_stop_scanning(); s_scanning = false; }
+        if (s_connected) esp_ble_gattc_close(s_gattc_if, s_conn_id);
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+        else if (s_have_target) {
+            esp_ble_gattc_cancel_open_params_t cp = { .gattc_if = s_gattc_if };
+            memcpy(cp.remote_bda, s_target_addr, sizeof(esp_bd_addr_t));
+            esp_ble_gattc_cancel_open(&cp);
+        }
+#endif
+    } else if (s_have_target) {
+        s_reconnect_delay_ms = RADEX_RECONNECT_MIN_MS;
+        xSemaphoreGive(s_reconnect_sem);
+    } else {
+        scan_start();
+    }
+}

@@ -1,7 +1,8 @@
 // #USB-1: USB-транспорт шлюза к Radex MR107ion. ESP32-S3 — USB-host (OTG-разъём), прибор — CDC-ACM
 // ABBA:A204, 230400 8N1, DTR=0, RTS=1. Реализует ТЕ ЖЕ функции, что ble_radex.c и ble_radex_journal.c
 // (ble_radex.h / ble_radex_journal.h): radex_data, история, веб-интерфейс, HTTP API и журнал выше шва
-// не меняются. Собирается ВМЕСТО BLE-файлов при CONFIG_RADEX_TRANSPORT_USB (main/CMakeLists.txt).
+// не меняются. В универсальной сборке собирается с -include link_rename_usb.h (имена usbimpl_*),
+// вызывает его диспетчер radex_link.c (main/CMakeLists.txt).
 // Доноры USB-host (§33, переиспользовано, не с нуля):
 //   firmware/atomspectra-waterfall/main/usb_host_cdc.c — usb_host_lib_task, установка драйверов,
 //     закрытие устройства вне колбэков драйвера (отложенный teardown);

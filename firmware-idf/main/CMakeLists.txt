@@ -2,19 +2,18 @@
 # компонентов сборки; явный список (как в CMakeLists донора) обрезал зависимости
 # и ломал линковку Bluedroid — undefined reference to esp_ble_gattc_open.
 # У донора BLE нет, поэтому его список зависимостей нам не годится.
-# #USB-1: канал связи с прибором — Kconfig RADEX_TRANSPORT (main/Kconfig.projbuild).
-# USB-транспорт реализует ТЕ ЖЕ функции ble_radex.h / ble_radex_journal.h, поэтому
-# собирается ВМЕСТО BLE-файлов; всё выше шва (веб, API, история, журнал) не меняется.
-if(CONFIG_RADEX_TRANSPORT_USB)
-    set(RADEX_TRANSPORT_SRCS "radex_usb.c" "radex_ekosf.c")
-else()
-    set(RADEX_TRANSPORT_SRCS "ble_radex.c" "ble_radex_journal.c")
-endif()
-
+# #USB-1 универсальная сборка: в образе оба канала связи с прибором. Внешние функции
+# ble_radex.h / ble_radex_journal.h реализует диспетчер radex_link.c; BLE- и USB-модули
+# собираются с -include link_rename_*.h и получают внутренние имена bleimpl_* / usbimpl_*.
+# Всё выше шва (веб, API, история, журнал) не меняется.
 idf_component_register(
     SRCS
         "main.c"
-        ${RADEX_TRANSPORT_SRCS}   # #USB-1: BLE или USB — см. выбор выше
+        "radex_link.c"            # #USB-1: выбор канала (USB есть -> USB, иначе BLE)
+        "ble_radex.c"
+        "ble_radex_journal.c"
+        "radex_usb.c"             # #USB-1: USB-host, прибор CDC-ACM ABBA:A204
+        "radex_ekosf.c"           # #USB-1: кадр EKOSF + RPC, хост-тест test/host
         "radex_data.c"
         "web_server.c"
         "ha_mqtt.c"
@@ -37,6 +36,11 @@ idf_component_register(
         "../web/index.html.gz"    # #RADEX-294: сжатая страница + web/index_etag.h от build_page.py
         "../web/setup.html"
 )
+
+set_source_files_properties("ble_radex.c" "ble_radex_journal.c" PROPERTIES
+    COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/link_rename_ble.h")
+set_source_files_properties("radex_usb.c" PROPERTIES
+    COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/link_rename_usb.h")
 
 # ── Локальная сборка «для себя» (W-063) ───────────────────────────────────
 # Определение RADEX_GW_LOCAL_WIFI включает в main.c подключение

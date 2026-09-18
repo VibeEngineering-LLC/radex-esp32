@@ -14,6 +14,7 @@
 #include "radex_data.h"
 #include "ble_radex.h"
 #include "ble_radex_journal.h"   /* #RADEX-281 */
+#include "radex_link.h"          /* #USB-1: канал связи, выключатель Bluetooth */
 #include "target_switch.h"       /* #RADEX-283 */
 #include "label_utf8.h"          /* #RADEX-274 */
 #include "radon_test_guard.h"    /* #RADEX-291 */
@@ -1511,18 +1512,16 @@ static esp_err_t handle_system(httpd_req_t *req)
     static const int8_t BLE_DBM[] = {
         -24, -21, -18, -15, -12, -9, -6, -3, 0, 3, 6, 9, 12, 15, 18, 20
     };
-#if CONFIG_RADEX_TRANSPORT_USB
-    /* #USB-1: при USB-транспорте контроллер BLE не запускается — спрашивать у него
-       мощность нельзя. Поле ble_tx_dbm остаётся в JSON (формат 1:1), значение 0. */
+    /* #USB-1: стек BLE может быть не поднят (прибор на USB с самого старта или Bluetooth
+       выключен) — тогда у контроллера мощность не спрашиваем; поле остаётся, значение 0. */
     int ble_dbm = 0;
-    (void)BLE_DBM;
-#else
-    esp_power_level_t lvl = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT);
-    int ble_dbm = ((int)lvl >= 0 && (int)lvl < (int)(sizeof(BLE_DBM)/sizeof(BLE_DBM[0])))
+    if (radex_link_ble_stack_up()) {
+        esp_power_level_t lvl = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT);
+        ble_dbm = ((int)lvl >= 0 && (int)lvl < (int)(sizeof(BLE_DBM)/sizeof(BLE_DBM[0])))
                   ? BLE_DBM[(int)lvl] : 0;
-#endif
+    }
 
-    char buf[512];
+    char buf[576];   /* #USB-1: +bt_enabled */
     /* #RADEX-188: адрес прибора, к которому привязана плата. MAC в эфире может
        принадлежать чужому Radex, и раньше по Web UI это было никак не видно. */
     char dev_mac[18] = "";
@@ -1548,7 +1547,8 @@ static esp_err_t handle_system(httpd_req_t *req)
            читателя (экспорт большого файла на слабом канале) и показание
            потеряно. Молча такое не должно происходить — потому и в /api/system. */
         "\"wifi_tx_dbm\":%d,\"ble_tx_dbm\":%d,"
-        "\"io_rejects\":%u,\"lock_timeouts\":%u,\"dev_mac\":\"%s\",\"sta_mac\":\"%s\"}",
+        "\"io_rejects\":%u,\"lock_timeouts\":%u,\"dev_mac\":\"%s\",\"sta_mac\":\"%s\","
+        "\"bt_enabled\":%s}",   /* #USB-1: настройка «Bluetooth» (POST /api/bt) */
         app ? app->version : "?",
         (long long)(esp_timer_get_time() / 1000000),
         (unsigned)esp_get_free_heap_size(),
@@ -1563,7 +1563,7 @@ static esp_err_t handle_system(httpd_req_t *req)
         wifi_dbm, ble_dbm,
         (unsigned)http_io_gate_reject_count(),
         (unsigned)radon_stats_lock_timeouts(),
-        dev_mac, sta_mac);
+        dev_mac, sta_mac, radex_link_bt_enabled() ? "true" : "false");
     if (n < 0 || n >= (int)sizeof(buf)) return httpd_resp_send_500(req);
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, buf, n);
@@ -1602,6 +1602,27 @@ static esp_err_t handle_target_clear(httpd_req_t *req)
     ble_radex_clear_target();
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+/* #USB-1: POST /api/bt, тело "1" | "0" (или JSON с true/false) — выключатель Bluetooth.
+   Хранится в NVS, применяется без перезагрузки (radex_link.c): выкл — BLE на паузе/не стартует. */
+static esp_err_t handle_bt_set(httpd_req_t *req)
+{
+    char body[32] = {0};
+    int len = req->content_len < (int)sizeof(body) - 1 ? req->content_len : (int)sizeof(body) - 1;
+    if (len <= 0 || httpd_req_recv(req, body, len) <= 0)
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "empty body");
+    bool on;
+    if (body[0] == '1' || strstr(body, "true")) on = true;
+    else if (body[0] == '0' || strstr(body, "false")) on = false;
+    else return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "expected 1/0");
+    bool ok = radex_link_set_bt_enabled(on);
+    char resp[48];
+    int n = snprintf(resp, sizeof(resp), "{\"ok\":%s,\"bt_enabled\":%s}", ok ? "true" : "false",
+                     radex_link_bt_enabled() ? "true" : "false");
+    if (!ok) httpd_resp_set_status(req, "500 Internal Server Error");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, n);
 }
 
 static esp_err_t handle_target(httpd_req_t *req)
@@ -1670,6 +1691,7 @@ static const httpd_uri_t s_uris[] = {
     { .uri = "/api/scan",      .method = HTTP_GET,  .handler = handle_scan   },
     { .uri = "/api/target",    .method = HTTP_POST, .handler = handle_target },
     { .uri = "/api/target/clear", .method = HTTP_POST, .handler = handle_target_clear },
+    { .uri = "/api/bt",        .method = HTTP_POST, .handler = handle_bt_set },   /* #USB-1 */
     { .uri = "/api/ha",        .method = HTTP_GET,  .handler = handle_ha_get },
     { .uri = "/api/ha",        .method = HTTP_POST, .handler = handle_ha_set },
     { .uri = "/api/history",   .method = HTTP_GET,  .handler = handle_history },

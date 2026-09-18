@@ -606,6 +606,10 @@
         <div class="card-title">Прибор (MAC)</div>
         <div class="card-value" id="dev-mac" style="font-size:var(--fs-md)">—</div>
         <div class="sub" style="font-size:var(--fs-xs)">адрес прибора, с которого идут показания</div>
+        <!-- #USB-1: прибор на USB — канал USB, иначе BLE; выключатель хранится в плате (NVS) -->
+        <label class="sub" style="font-size:var(--fs-xs);display:flex;gap:6px;align-items:center;margin-top:6px">
+          <input type="checkbox" id="bt-enabled" style="width:auto;min-height:0" checked> Bluetooth (когда прибор не на USB)
+        </label>
       </div>
       <div class="card">
         <div class="card-title">Прочитано с прибора</div>
@@ -996,6 +1000,22 @@
       document.getElementById('ha-form').addEventListener('submit', saveHaSettings);
       document.getElementById('narodmon-form').addEventListener('submit', saveNarodmonSettings);
       document.getElementById('nm-enable-btn').addEventListener('click', enableNarodmon);
+      /* #USB-1: выключатель Bluetooth — POST /api/bt, применяется платой без перезагрузки */
+      document.getElementById('bt-enabled').addEventListener('change', async (ev) => {
+        const box = ev.target, want = box.checked;
+        box.disabled = true;
+        try {
+          const r = await fetch('/api/bt', { method: 'POST', body: want ? '1' : '0' });
+          const j = await r.json();
+          if (!r.ok || !j.ok) throw new Error('плата ответила ' + r.status);
+          box.checked = !!j.bt_enabled;
+        } catch (e) {
+          box.checked = !want;
+          alert('Не удалось переключить Bluetooth: ' + e.message);
+        } finally {
+          box.disabled = false;
+        }
+      });
       /* #RADEX-263: пометка «человек правит поле» — пока она стоит, обновление
          из /api/narodmon не трогает ввод. Снимается после успешного сохранения,
          и тогда поля снова показывают то, что реально лежит на плате. */
@@ -1198,6 +1218,9 @@
         {
           const mel = document.getElementById('dev-mac');
           if (mel) mel.textContent = (systemRes && systemRes.dev_mac) ? systemRes.dev_mac : '—';
+          /* #USB-1: состояние выключателя Bluetooth; пока идёт запрос переключения — не трогаем */
+          const bt = document.getElementById('bt-enabled');
+          if (bt && !bt.disabled && systemRes && typeof systemRes.bt_enabled === 'boolean') bt.checked = systemRes.bt_enabled;
           /* #RADEX-229: MAC ПЛАТЫ подставляем в поле Народмона, пока человек его
              не трогал. Ровно его требует narodmon.ru как идентификатор станции, и
              взять его пользователю было негде — поле стояло пустым с плейсхолдером
@@ -1293,6 +1316,8 @@
       // На узком экране CSS показывает краткую строку вместо полной. Её обязательно
       // заполнять: незаполненный элемент оставил бы телефон вообще без состояния опроса.
       const statusShort = document.getElementById('status-short');
+      /* #USB-1: канал связи с прибором — ненавязчиво, приставкой к строке статуса */
+      const via = data.transport === 'usb' ? 'USB · ' : data.transport === 'ble' ? 'BLE · ' : '';
 
       if (!data.valid) {
         statusDot.className = 'status-dot';
@@ -1301,13 +1326,13 @@
       } else if (data.age_ms > 22 * 60 * 1000) {
         statusDot.className = 'status-dot error';
         const mins = Math.round(data.age_ms / 60000);
-        statusText.textContent = `Пропущен плановый опрос: последние данные ${mins} мин назад`;
+        statusText.textContent = `${via}Пропущен плановый опрос: последние данные ${mins} мин назад`;
         if (statusShort) statusShort.textContent = `пропуск: ${mins} мин назад`;
       } else {
         statusDot.className = 'status-dot connected';
         const mins = Math.round(data.age_ms / 60000);
         const nextMins = Math.max(1, 10 - mins);
-        statusText.textContent = `Опрос раз в 10 минут · последний ${mins} мин назад · следующий примерно через ${nextMins} мин`;
+        statusText.textContent = `${via}Опрос раз в 10 минут · последний ${mins} мин назад · следующий примерно через ${nextMins} мин`;
         if (statusShort) statusShort.textContent = `${mins} мин назад · след. через ${nextMins}`;
       }
 
